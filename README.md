@@ -21,7 +21,7 @@ This project extracts an explicit, algebraic vehicle dynamics model from empiric
 SINDyMPC/
 ├── docs/                       # LaTeX proposals, lit reviews, and final reports
 ├── data/                       # Simulated trajectory data for SINDy training
-├── src/                        # Main library
+├── sindympc/                   # Main library
 │   ├── dynamics/               # Nominal and SINDy-learned plant models (JAX)
 │   ├── system_id/              # PySINDy training scripts (ME569)
 │   ├── planners/               # RRT and APF algorithms
