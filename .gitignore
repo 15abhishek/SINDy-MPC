@@ -1,0 +1,94 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# =========================
+# Environments
+# =========================
+.env
+.venv
+env/
+venv/
+ENV/
+sindy_mpc/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.cursor/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS Generated Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Data & Datasets
+# =========================
+data/*.npz
+data/*.npy
+data/*.csv
+
+/data/
+!hybridvla/data/
+
+# =========================
+# BeamNG Output
+# =========================
+output/
+outputs/
+bev_test_output/
+*_output/
+*_collection/
+*_collection
+
+# =========================
+# Generated Visualizations
+# =========================
+visualizations/
+trajectory_images/
+trajectory_images_wheels_1.5meter/
+trajectory_images_wo_wheels/
+trajectory_simple_images/
+trajectory_visualizations/
+combined_visualization/
+lidar_images/
+vis_output/
+viz_elevation/
+vis_videos/
+vis_v1_extrinsics/
+
+# =========================
+# Generated Videos
+# =========================
+trajectory_videos/
+labeled_videos/
+gemini_labeled_videos/
+gemini_annotations_videos/
+
+# =========================
+# Media & Model Files
+# =========================
+*.png
+*.mp4
+*.zip
+*.avi
+*.pt

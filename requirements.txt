@@ -1,0 +1,35 @@
+# --- CORE MATH & CONTROL (ME548 + ME569) ---
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+jax>=0.4.26
+#jax[cuda12]       # Assuming you want GPU acceleration
+equinox>=0.11.0
+cvxpy>=1.4.0
+pysindy>=1.7.5    # Required for ME569
+
+# --- DATA, VISION & SIMULATION (Hybrid-VLA) ---
+pillow>=8.0.0
+opencv-python>=4.5.0
+tqdm>=4.60.0
+pyyaml
+networkx>=2.6.0
+beamngpy>=1.28
+
+# --- DEEP LEARNING BACKBONES (Hybrid-VLA) ---
+torch>=2.0.0
+torchvision>=0.15.0
+# torch-scatter>=2.1.0
+# Note: spconv, MobileSAM, and SAM2 omitted here to prevent local build failures. 
+# Install those manually if you end up needing the heavy Vision-Language stuff for this specific project.
+
+# --- LLM APIs (Hybrid-VLA) ---
+google-generativeai>=0.3.0
+openai>=1.0.0
+
+# --- JUPYTER & DEV TOOLS ---
+ipywidgets>=8.0
+jupyterlab>=4.0
+ipykernel>=6.25
+ipython>=8.12
+nbformat>=5.7

@@ -10,6 +10,28 @@ Safe autonomous navigation in dynamic environments requires strict, real-time co
 
 This project extracts an explicit, algebraic vehicle dynamics model from empirical data using PySINDy (ME569), and embeds those learned equations directly into a continuous-time, JAX-linearized SQP-MPC solver (ME548).
 
+## 🚀 Setup & Installation (Ubuntu / Linux)
+Create and activate a conda environment:
+
+```bash
+conda create -n sindy-mpc python=3.10
+conda activate sindy-mpc
+```
+
+Install the Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+If `torch-scatter` fails to build from source on Linux, install the pre-compiled wheel that matches your PyTorch and CUDA versions. For example, for PyTorch 2.1.2 with CUDA 12.1:
+
+```bash
+pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.2+cu121.html
+```
+
+To run the BeamNG data collection scripts, you also need `BeamNG.tech` available on the Linux machine, either through the Linux build or via Proton/Wine.
+
 ### 🛠 Architecture
 1. **Simulation Environment:** A custom Python/JAX 2D environment with kinematic bicycle dynamics and moving obstacles.
 2. **System ID (ME569):** PySINDy extracts explicit non-linear governing equations from randomly generated trajectory data.
