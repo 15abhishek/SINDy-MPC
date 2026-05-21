@@ -17,9 +17,9 @@ def continuous_dynamics(state, control, wheel_base, dt):
     x_dot = v * jnp.cos(theta)
     y_dot = v * jnp.sin(theta)
     omega = v * jnp.tan(delta) / L
-    v = v + a * dt # TODO: Add noise
+    v_dot = a # TODO: Add noise
 
-    return jnp.array([x_dot, y_dot, omega, v])
+    return jnp.array([x_dot, y_dot, omega, v_dot])
 
 
 def rk4_step(state, control, wheel_base, dt):

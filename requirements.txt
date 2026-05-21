@@ -2,10 +2,16 @@
 numpy>=1.24
 scipy>=1.10
 matplotlib>=3.7
+# JAX (default: CPU — works on all machines). CVXPY/OSQP run on CPU regardless.
 jax>=0.4.26
-#jax[cuda12]       # Assuming you want GPU acceleration
+jaxlib>=0.4.26
+#
+# If you previously installed GPU JAX and see CUDA_ERROR_COMPAT_NOT_SUPPORTED_ON_DEVICE:
+#   pip uninstall -y jax-cuda12-plugin jax-cuda12-pjrt
+# Optional GPU (driver must support CUDA 12): pip install -U "jax[cuda12]>=0.4.26"
 equinox>=0.11.0
 cvxpy>=1.4.0
+osqp>=0.6.3          # fast QP solver for SQP-MPC (homework 07_mpc pattern)
 pysindy>=1.7.5    # Required for ME569
 
 # --- DATA, VISION & SIMULATION (Hybrid-VLA) ---

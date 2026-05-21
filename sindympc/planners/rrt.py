@@ -32,6 +32,9 @@ class RRT:
         obstacle_list: List of circular obstacles as (x, y, radius) tuples.
         step_size: Maximum extension distance per steering step.
         max_iter: Maximum number of RRT iterations before giving up.
+        goal_sample_rate: Probability of sampling the goal instead of a random point.
+        bounds: Optional workspace limits as ((x_min, x_max), (y_min, y_max)).
+            If None, bounds are inferred from start and goal with padding.
     """
 
     def __init__(
@@ -42,6 +45,7 @@ class RRT:
         step_size: float,
         max_iter: int,
         goal_sample_rate: float = 0.1,
+        bounds: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
     ) -> None:
         self.start = start
         self.goal = goal
@@ -50,19 +54,58 @@ class RRT:
         self.max_iter = max_iter
         self.goal_sample_rate = goal_sample_rate
 
+        if bounds is not None:
+            self.x_bounds, self.y_bounds = bounds
+        else:
+            # Add padding around start and goal coordinates
+            padding = 2.0
+            self.x_bounds = (min(start[0], goal[0]) - padding, max(start[0], goal[0]) + padding)
+            self.y_bounds = (min(start[1], goal[1]) - padding, max(start[1], goal[1]) + padding)
+            # self.x_bounds, self.y_bounds = self._default_bounds(start, goal)
+
         self.nodes: List[Node] = [Node(start[0], start[1], parent=None)]
 
-    def _get_random_point(self) -> Tuple[float, float]:
-        """Sample a random point in the planning workspace.
+    @staticmethod
+    def _default_bounds(
+        start: Tuple[float, float],
+        goal: Tuple[float, float],
+        padding_fraction: float = 0.1,
+    ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """Compute workspace bounds from start/goal with fractional padding."""
+        x_min = min(start[0], goal[0])
+        x_max = max(start[0], goal[0])
+        y_min = min(start[1], goal[1])
+        y_max = max(start[1], goal[1])
 
-        Typically mixes uniform random sampling with occasional goal biasing.
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+        if x_span < 1e-9:
+            x_span = 1.0
+        if y_span < 1e-9:
+            y_span = 1.0
+
+        pad_x = padding_fraction * x_span
+        pad_y = padding_fraction * y_span
+
+        x_bounds = (x_min - pad_x, x_max + pad_x)
+        y_bounds = (y_min - pad_y, y_max + pad_y)
+        return x_bounds, y_bounds
+
+    def _get_random_point(self) -> Tuple[float, float]:
+        """Sample a random point uniformly inside the workspace bounds.
+
+        With probability ``goal_sample_rate``, returns the goal instead.
+        Otherwise draws x ~ Uniform(x_bounds) and y ~ Uniform(y_bounds).
 
         Returns:
             (x, y) sampled configuration.
         """
         if np.random.random() < self.goal_sample_rate:
             return self.goal
-        return tuple(np.random.uniform(0, 1, 2))
+
+        x = np.random.uniform(self.x_bounds[0], self.x_bounds[1])
+        y = np.random.uniform(self.y_bounds[0], self.y_bounds[1])
+        return (float(x), float(y))
 
     def _get_nearest_node(self, random_point: Tuple[float, float]) -> Node:
         """Find the tree node closest to the given point.
