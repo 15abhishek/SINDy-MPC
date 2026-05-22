@@ -19,22 +19,15 @@ from sindympc.planners.rrt import Node, RRT
 
 START: Tuple[float, float] = (0.0, 0.0)
 GOAL: Tuple[float, float] = (10.0, 10.0)
+PADDING_FRACTION = 0.25
 
 OBSTACLE_LIST: List[Tuple[float, float, float]] = [
     # (x, y, radius)
     (5, 5, 1),
-    # (0.2, 0.2, 0.05),
-    # (0.8, 0.2, 0.05),
-    # (0.2, 0.8, 0.05),
-    # (0.8, 0.8, 0.05),
-    # (0.2, 0.5, 0.05),
-    # (0.8, 0.5, 0.05),
-    # (0.5, 0.2, 0.05),
-    # (0.5, 0.8, 0.05),
-    # (0.3, 0.3, 0.09),
-    # (0.7, 0.3, 0.09),
-    # (0.3, 0.7, 0.09),
-    # (0.7, 0.7, 0.09)
+    (2, 2, 1),
+    (2, 8, 1),
+    (8, 2, 1),
+    (8, 8, 1),
 ]
 
 STEP_SIZE: float = 0.1
@@ -44,6 +37,7 @@ MAX_ITER: int = 5000
 def run_rrt_planner(
     start: Tuple[float, float],
     goal: Tuple[float, float],
+    padding_fraction: float,
     obstacle_list: List[Tuple[float, float, float]],
     step_size: float,
     max_iter: int,
@@ -53,6 +47,7 @@ def run_rrt_planner(
     Args:
         start: (x, y) start configuration.
         goal: (x, y) goal configuration.
+        padding_fraction: Padding fraction for the workspace bounds.
         obstacle_list: Circular obstacles as (x, y, radius) tuples.
         step_size: RRT extension step size.
         max_iter: Maximum RRT iterations.
@@ -66,6 +61,7 @@ def run_rrt_planner(
         obstacle_list=obstacle_list,
         step_size=step_size,
         max_iter=max_iter,
+        padding_fraction=padding_fraction,
     )
     path = planner.plan()
     return planner, path
@@ -155,6 +151,7 @@ def main() -> None:
     planner, path = run_rrt_planner(
         start=START,
         goal=GOAL,
+        padding_fraction=PADDING_FRACTION,
         obstacle_list=OBSTACLE_LIST,
         step_size=STEP_SIZE,
         max_iter=MAX_ITER,

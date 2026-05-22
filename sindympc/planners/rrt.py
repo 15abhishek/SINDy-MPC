@@ -33,8 +33,10 @@ class RRT:
         step_size: Maximum extension distance per steering step.
         max_iter: Maximum number of RRT iterations before giving up.
         goal_sample_rate: Probability of sampling the goal instead of a random point.
+        padding_fraction: Fraction of start–goal span used as workspace padding
+            when ``bounds`` is None (e.g. 0.1 → 10% padding on each side).
         bounds: Optional workspace limits as ((x_min, x_max), (y_min, y_max)).
-            If None, bounds are inferred from start and goal with padding.
+            If None, bounds are inferred from start and goal with ``padding_fraction``.
     """
 
     def __init__(
@@ -45,10 +47,12 @@ class RRT:
         step_size: float,
         max_iter: int,
         goal_sample_rate: float = 0.1,
+        padding_fraction: float = 0.1,
         bounds: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
     ) -> None:
         self.start = start
         self.goal = goal
+        self.padding_fraction = padding_fraction
         self.obstacle_list = obstacle_list
         self.step_size = step_size
         self.max_iter = max_iter
@@ -57,11 +61,9 @@ class RRT:
         if bounds is not None:
             self.x_bounds, self.y_bounds = bounds
         else:
-            # Add padding around start and goal coordinates
-            padding = 2.0
-            self.x_bounds = (min(start[0], goal[0]) - padding, max(start[0], goal[0]) + padding)
-            self.y_bounds = (min(start[1], goal[1]) - padding, max(start[1], goal[1]) + padding)
-            # self.x_bounds, self.y_bounds = self._default_bounds(start, goal)
+            self.x_bounds, self.y_bounds = self._default_bounds(
+                start, goal, padding_fraction
+            )
 
         self.nodes: List[Node] = [Node(start[0], start[1], parent=None)]
 

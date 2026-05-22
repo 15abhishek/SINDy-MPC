@@ -38,20 +38,38 @@ START_STATE = jnp.array([0.1, 0.1, _INIT_HEADING, 0.5])  # [x, y, theta, v]
 RRT_START: Tuple[float, float] = (float(START_STATE[0]), float(START_STATE[1]))
 RRT_GOAL: Tuple[float, float] = GOAL_POSITION
 
+# OBSTACLE_LIST: List[Tuple[float, float, float]] = [
+#     # (x, y, radius)
+#     (5, 5, 1),
+#     (2, 2, 1),
+#     (2, 8, 1),
+#     (8, 2, 1),
+#     (8, 8, 1),
+#     (8, 5, 1),
+#     (5, 8, 1),
+#     (7, 3, 1),
+#     (3, 7, 1),
+#     (7, 7, 1),
+# ]
+
 OBSTACLE_LIST: List[Tuple[float, float, float]] = [
-    # (x, y, radius)
-    (5, 5, 1),
-    # (0.2, 0.2, 0.05)
+    (
+        np.random.uniform(1, 9),      # x
+        np.random.uniform(1, 9),      # y
+        np.random.uniform(0.8, 1.3),  # radius (1 ± 0.5)
+    )
+    for _ in range(np.random.randint(3, 6))
 ]
 
 # RRT planner parameters (from visualize_rrt.py)
-RRT_STEP_SIZE: float = 0.1
+RRT_STEP_SIZE: float = 0.5
 RRT_MAX_ITER: int = 5000
+PADDING_FRACTION: float = 0.15
 
 # Simulation parameters
-DT: float = 0.05
-MAX_SIM_STEPS: int = 500
-GOAL_THRESHOLD: float = 0.5  # [m] position error to stop simulation
+DT: float = 0.2
+MAX_SIM_STEPS: int = 1000
+GOAL_THRESHOLD: float = 0.1  # [m] position error to stop simulation
 
 # Vehicle / MPC parameters
 WHEEL_BASE: float = 2.5
@@ -85,6 +103,7 @@ def run_rrt_planner() -> Tuple[Optional[List[Tuple[float, float]]], RRT]:
     planner = RRT(
         start=RRT_START,
         goal=RRT_GOAL,
+        padding_fraction=PADDING_FRACTION,
         obstacle_list=OBSTACLE_LIST,
         step_size=RRT_STEP_SIZE,
         max_iter=RRT_MAX_ITER,
