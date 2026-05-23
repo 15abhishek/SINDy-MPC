@@ -137,10 +137,10 @@ class SQPMPC:
 
         # Trust-region and terminal weights (homework 05 defaults if omitted)
         self.Q_trp = (
-            Q_trp if Q_trp is not None else 0.1 * jnp.eye(STATE_DIM)
+            Q_trp if Q_trp is not None else 0.01 * jnp.eye(STATE_DIM)
         )
         self.R_trp = (
-            R_trp if R_trp is not None else 0.1 * jnp.eye(CONTROL_DIM)
+            R_trp if R_trp is not None else 0.01 * jnp.eye(CONTROL_DIM)
         )
         self.QN = QN if QN is not None else Q
 
@@ -196,7 +196,7 @@ class SQPMPC:
         s: float,
         arc_length: np.ndarray,
         waypoints: np.ndarray,
-        eps: float = 0.05,
+        eps: float = 0.2,
     ) -> float:
         """Path tangent heading at arc-length ``s`` via a small forward difference."""
         s_lo = max(float(arc_length[0]), s - eps)
@@ -299,6 +299,13 @@ class SQPMPC:
         for k in range(H):
             # Stage costs
             objective += cp.quad_form(self.controls[k, :], R)
+            # Smooth steering / acceleration changes
+            if k > 0:   # temporary, remove later if doesn't work
+                Rd = cp.Constant(np.diag([0.1, 1.0]))
+                objective += cp.quad_form(
+                    self.controls[k, :] - self.controls[k - 1, :],
+                    Rd,
+                )
             objective += cp.quad_form(
                 self.states[k, :] - self.reference_states[k, :], Q
             )
@@ -460,7 +467,8 @@ class SQPMPC:
         if self.n_obs > 0 and self.G_obs is not None and self.h_obs is not None:
             # Linearize about the RRT-based reference (collision-free), not the
             # rollout, which often cuts through obstacles when tracking is poor.
-            G_obs, h_obs = self._linearize_obstacle_constraints(reference_trajectory)
+            # G_obs, h_obs = self._linearize_obstacle_constraints(reference_trajectory)         # original
+            G_obs, h_obs = self._linearize_obstacle_constraints(previous_states)                # temporary, if doesn't work
             self.G_obs.value = G_obs
             self.h_obs.value = h_obs
 
@@ -650,10 +658,12 @@ class SQPMPC:
 
             if not self._solve_problem():
                 # QP infeasible / inaccurate — keep previous iterate, don't crash
+                print("MPC solve failed, continuing with previous iterate")
                 break
 
             assert self.states is not None and self.controls is not None
             new_controls = jnp.array(self.controls.value)
+            print("u =", np.array(new_controls[0]))
 
             if float(jnp.linalg.norm(new_controls - previous_controls)) < self.sqp_tol:
                 previous_controls = new_controls

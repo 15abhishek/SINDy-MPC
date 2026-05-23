@@ -38,11 +38,11 @@ START_STATE = jnp.array([0.1, 0.1, _INIT_HEADING, 0.5])  # [x, y, theta, v]
 RRT_START: Tuple[float, float] = (float(START_STATE[0]), float(START_STATE[1]))
 RRT_GOAL: Tuple[float, float] = GOAL_POSITION
 
-# OBSTACLE_LIST: List[Tuple[float, float, float]] = [
-#     # (x, y, radius)
-#     (5, 5, 1),
-#     (2, 2, 1),
-#     (2, 8, 1),
+OBSTACLE_LIST: List[Tuple[float, float, float]] = [
+    # (x, y, radius)
+    # (3, 5, 1),
+    # (1.5, 1.5, 1),
+    # (6, 4, 1),
 #     (8, 2, 1),
 #     (8, 8, 1),
 #     (8, 5, 1),
@@ -50,7 +50,7 @@ RRT_GOAL: Tuple[float, float] = GOAL_POSITION
 #     (7, 3, 1),
 #     (3, 7, 1),
 #     (7, 7, 1),
-# ]
+]
 
 OBSTACLE_LIST: List[Tuple[float, float, float]] = [
     (
@@ -58,7 +58,7 @@ OBSTACLE_LIST: List[Tuple[float, float, float]] = [
         np.random.uniform(1, 9),      # y
         np.random.uniform(0.8, 1.3),  # radius (1 ± 0.5)
     )
-    for _ in range(np.random.randint(3, 6))
+    for _ in range(np.random.randint(7, 10))
 ]
 
 # RRT planner parameters (from visualize_rrt.py)
@@ -67,32 +67,32 @@ RRT_MAX_ITER: int = 5000
 PADDING_FRACTION: float = 0.15
 
 # Simulation parameters
-DT: float = 0.2
-MAX_SIM_STEPS: int = 1000
-GOAL_THRESHOLD: float = 0.1  # [m] position error to stop simulation
+DT: float = 0.05
+MAX_SIM_STEPS: int = 600
+GOAL_THRESHOLD: float = 0.2  # [m] position error to stop simulation
 
 # Vehicle / MPC parameters
 WHEEL_BASE: float = 2.5
-MAX_ACCELERATION: float = 0.5
-MAX_STEERING_ANGLE: float = 0.5
+MAX_ACCELERATION: float = 1.0
+MAX_STEERING_ANGLE: float = 1.2
 MPC_HORIZON: int = 25
-TARGET_SPEED: float = 1.5
+TARGET_SPEED: float = 2.0   # increase later if needed
 
 # Cost matrices (tune as needed)
 Q = jnp.diag(jnp.array([
-    10.0,  # x
-    10.0,  # y
-    5.0,   # theta
-    1.0,   # velocity
+    15.0,   # x
+    15.0,   # y
+    3.0,    # theta
+    0.1,    # velocity
 ]))
 R = jnp.diag(jnp.array([
-    0.5,   # acceleration penalty
-    0.1,   # steering penalty (was too high — prevented turning)
+    0.03,   # acceleration penalty
+    0.005,   # steering penalty (was too high — prevented turning)
 ]))
 QN = jnp.diag(jnp.array([
-    100.0,  # terminal x — pull onto goal at end of path
-    100.0,  # terminal y
-    5.0,
+    80.0,  # terminal x — pull onto goal at end of path
+    80.0,  # terminal y
+    8.0,
     1.0,
 ]))
 OBSTACLE_MARGIN: float = 0.35
@@ -126,7 +126,8 @@ def build_mpc_controller() -> SQPMPC:
         solver="OSQP",
         target_speed=TARGET_SPEED,
         QN=QN,
-        obstacle_list=OBSTACLE_LIST,
+        # obstacle_list=OBSTACLE_LIST,
+        obstacle_list=[],   # temporary, remove later
         obstacle_margin=OBSTACLE_MARGIN,
         goal_position=GOAL_POSITION,
     )
@@ -202,6 +203,18 @@ def main() -> None:
         return
 
     print(f"RRT path found with {len(rrt_path)} waypoints.")
+
+    # Simple path smoothing     (temporary, remove later if doesn't work)
+    smoothed_path = [rrt_path[0]]
+
+    for i in range(1, len(rrt_path) - 1):
+        x = 0.25 * rrt_path[i - 1][0] + 0.5 * rrt_path[i][0] + 0.25 * rrt_path[i + 1][0]
+        y = 0.25 * rrt_path[i - 1][1] + 0.5 * rrt_path[i][1] + 0.25 * rrt_path[i + 1][1]
+        smoothed_path.append((x, y))
+
+    smoothed_path.append(rrt_path[-1])
+
+    rrt_path = smoothed_path
 
     # --- Low-level controller ---
     mpc = build_mpc_controller()

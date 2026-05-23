@@ -46,7 +46,7 @@ class RRT:
         obstacle_list: List[Tuple[float, float, float]],
         step_size: float,
         max_iter: int,
-        goal_sample_rate: float = 0.1,
+        goal_sample_rate: float = 0.25,
         padding_fraction: float = 0.1,
         bounds: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
     ) -> None:
@@ -184,8 +184,10 @@ class RRT:
         x1, y1 = node.parent.x, node.parent.y
         x2, y2 = node.x, node.y
 
+        safety_margin = 0.3
+
         for ox, oy, radius in self.obstacle_list:
-            if self._point_to_segment_distance(ox, oy, x1, y1, x2, y2) <= radius:
+            if self._point_to_segment_distance(ox, oy, x1, y1, x2, y2) <= radius + safety_margin:
                 return False
 
         return True
