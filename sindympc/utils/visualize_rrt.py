@@ -10,28 +10,31 @@ from typing import List, Optional, Tuple
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
+from sindympc.config.beamng_defaults import (
+    BEAMNG_GOAL_XY,
+    BEAMNG_RRT_STEP_SIZE,
+    BEAMNG_START_XY,
+    BEAMNG_X_BOUNDS,
+    BEAMNG_Y_BOUNDS,
+)
 from sindympc.planners.rrt import Node, RRT
 
-
 # -----------------------------------------------------------------------------
-# Scenario configuration — edit these values for your test case
+# Scenario — BeamNG world frame (same as data/trajectory.jsonl)
 # -----------------------------------------------------------------------------
 
-START: Tuple[float, float] = (0.0, 0.0)
-GOAL: Tuple[float, float] = (10.0, 10.0)
-PADDING_FRACTION = 0.25
+START: Tuple[float, float] = BEAMNG_START_XY
+GOAL: Tuple[float, float] = BEAMNG_GOAL_XY
+RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
+    BEAMNG_X_BOUNDS,
+    BEAMNG_Y_BOUNDS,
+)
+PADDING_FRACTION = 0.05
 
-OBSTACLE_LIST: List[Tuple[float, float, float]] = [
-    # (x, y, radius)
-    (5, 5, 1),
-    (2, 2, 1),
-    (2, 8, 1),
-    (8, 2, 1),
-    (8, 8, 1),
-]
+OBSTACLE_LIST: List[Tuple[float, float, float]] = []
 
-STEP_SIZE: float = 0.1
-MAX_ITER: int = 5000
+STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
+MAX_ITER: int = 8000
 
 
 def run_rrt_planner(
@@ -41,6 +44,7 @@ def run_rrt_planner(
     obstacle_list: List[Tuple[float, float, float]],
     step_size: float,
     max_iter: int,
+    bounds: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
 ) -> Tuple[RRT, Optional[List[Tuple[float, float]]]]:
     """Instantiate the RRT planner and run ``plan()``.
 
@@ -58,6 +62,7 @@ def run_rrt_planner(
     planner = RRT(
         start=start,
         goal=goal,
+        bounds=bounds,
         obstacle_list=obstacle_list,
         step_size=step_size,
         max_iter=max_iter,
@@ -155,6 +160,7 @@ def main() -> None:
         obstacle_list=OBSTACLE_LIST,
         step_size=STEP_SIZE,
         max_iter=MAX_ITER,
+        bounds=RRT_BOUNDS,
     )
 
     if path is None:

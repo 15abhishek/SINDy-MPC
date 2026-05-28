@@ -16,13 +16,22 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from sindympc.dynamics.bicycle_model import rk4_step
+from sindympc.dynamics.bicycle_model import rk4_step as bicycle_rk4_step
 
 # ---------------------------------------------------------------------------
 # Dimensions (bicycle model)
 # ---------------------------------------------------------------------------
 STATE_DIM = 4  # [x, y, theta, v]
 CONTROL_DIM = 2  # [a, delta]
+
+
+def _to_cvxpy_param(value: jnp.ndarray | np.ndarray) -> np.ndarray:
+    """Cast JAX/NumPy arrays to real float64 for CVXPY (rejects NaN/complex)."""
+    arr = np.asarray(value)
+    if np.iscomplexobj(arr):
+        arr = np.real(arr)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.ascontiguousarray(arr, dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +59,39 @@ def linearize_dynamics(
     """
     A, B = jax.jacobian(dynamics, argnums=(0, 1))(state, control)
     C = dynamics(state, control) - A @ state - B @ control
+    return A, B, C
+
+
+def linearize_dynamics_fd(
+    dynamics: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
+    state: jnp.ndarray,
+    control: jnp.ndarray,
+    eps: float = 1e-5,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Finite-difference linearization (for non-JAX plants such as PySINDy RK4).
+
+    Same interface as :func:`linearize_dynamics` but does not require JAX autodiff
+    through the dynamics callable.
+    """
+    state = jnp.asarray(state)
+    control = jnp.asarray(control)
+    n = int(state.shape[0])
+    m = int(control.shape[0])
+    f0 = dynamics(state, control)
+
+    a_cols = []
+    for i in range(n):
+        ds = jnp.zeros_like(state).at[i].set(eps)
+        a_cols.append((dynamics(state + ds, control) - f0) / eps)
+    A = jnp.stack(a_cols, axis=1)
+
+    b_cols = []
+    for j in range(m):
+        du = jnp.zeros_like(control).at[j].set(eps)
+        b_cols.append((dynamics(state, control + du) - f0) / eps)
+    B = jnp.stack(b_cols, axis=1)
+
+    C = f0 - A @ state - B @ control
     return A, B, C
 
 
@@ -113,6 +155,12 @@ class SQPMPC:
         obstacle_list: Optional[List[Tuple[float, float, float]]] = None,
         obstacle_margin: float = 0.2,
         goal_position: Optional[Tuple[float, float]] = None,
+        rk4_step_fn: Optional[
+            Callable[[jnp.ndarray, jnp.ndarray, float, float], jnp.ndarray]
+        ] = None,
+        use_fd_linearization: bool = False,
+        R_delta: Optional[jnp.ndarray] = None,
+        verbose: bool = False,
     ) -> None:
         self.Q = Q
         self.R = R
@@ -130,6 +178,11 @@ class SQPMPC:
         self.goal_position = goal_position
         self.n_obs = len(self.obstacle_list)
 
+        self.rk4_step_fn = rk4_step_fn or bicycle_rk4_step
+        self._linearize_fn = (
+            linearize_dynamics_fd if use_fd_linearization else linearize_dynamics
+        )
+
         # Warm-start control sequence across MPC calls (receding horizon)
         self._last_controls: Optional[jnp.ndarray] = None
         # Furthest arc-length progress along the path (prevents backward reference jumps)
@@ -143,6 +196,11 @@ class SQPMPC:
             R_trp if R_trp is not None else 0.01 * jnp.eye(CONTROL_DIM)
         )
         self.QN = QN if QN is not None else Q
+        self._R_delta = np.asarray(
+            R_delta if R_delta is not None else jnp.diag(jnp.array([0.05, 5.0])),
+            dtype=np.float64,
+        )
+        self.verbose = verbose
 
         self._u_min = np.array([-max_acceleration, -max_steering_angle])
         self._u_max = np.array([max_acceleration, max_steering_angle])
@@ -244,7 +302,7 @@ class SQPMPC:
         """Return f(x, u) = rk4_step(x, u, wheel_base, dt) for JAX linearization."""
 
         def f(state: jnp.ndarray, control: jnp.ndarray) -> jnp.ndarray:
-            return rk4_step(state, control, wheel_base, self.dt)
+            return self.rk4_step_fn(state, control, wheel_base, self.dt)
 
         return f
 
@@ -295,16 +353,15 @@ class SQPMPC:
         # --- Objective and constraints (rocket notebook loop) ---
         objective = 0
         constraints = [self.states[0, :] == self.initial_state]
+        R_delta = cp.Constant(self._R_delta, name="R_delta")
 
         for k in range(H):
             # Stage costs
             objective += cp.quad_form(self.controls[k, :], R)
-            # Smooth steering / acceleration changes
-            if k > 0:   # temporary, remove later if doesn't work
-                Rd = cp.Constant(np.diag([0.1, 1.0]))
+            if k > 0:
                 objective += cp.quad_form(
                     self.controls[k, :] - self.controls[k - 1, :],
-                    Rd,
+                    R_delta,
                 )
             objective += cp.quad_form(
                 self.states[k, :] - self.reference_states[k, :], Q
@@ -363,7 +420,7 @@ class SQPMPC:
         Thin wrapper around the module-level ``linearize_dynamics``.
         """
         dynamics = self._make_discrete_dynamics(wheel_base)
-        return linearize_dynamics(dynamics, nominal_state, nominal_control)
+        return self._linearize_fn(dynamics, nominal_state, nominal_control)
 
     def _rollout_nominal_trajectory(
         self,
@@ -382,7 +439,7 @@ class SQPMPC:
             Nominal states, shape (H + 1, STATE_DIM).
         """
         def step(state: jnp.ndarray, control: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
-            next_state = rk4_step(state, control, wheel_base, self.dt)
+            next_state = self.rk4_step_fn(state, control, wheel_base, self.dt)
             return next_state, next_state
 
         _, trajectory = jax.lax.scan(step, initial_state, control_sequence)
@@ -407,7 +464,7 @@ class SQPMPC:
             Cs: (H, STATE_DIM)
         """
         dynamics = self._make_discrete_dynamics(wheel_base)
-        return jax.vmap(linearize_dynamics, in_axes=(None, 0, 0))(
+        return jax.vmap(self._linearize_fn, in_axes=(None, 0, 0))(
             dynamics, nominal_states[:-1], nominal_controls
         )
 
@@ -432,10 +489,29 @@ class SQPMPC:
             gs = jax.vmap(constraint_fn)(nominal_states)
             hs = gs - jnp.einsum("ij,ij->i", Gs, nominal_states)
 
-            G[:, o, :] = np.array(Gs)
-            h[:, o] = np.array(hs)
+            G[:, o, :] = _to_cvxpy_param(Gs)
+            h[:, o] = _to_cvxpy_param(hs)
 
         return G, h
+
+    def _rollout_nominal_trajectory_safe(
+        self,
+        initial_state: jnp.ndarray,
+        control_sequence: jnp.ndarray,
+        wheel_base: float,
+    ) -> jnp.ndarray:
+        """Nonlinear rollout; reset controls if SINDy (or other) rollout diverges."""
+        trajectory = self._rollout_nominal_trajectory(
+            initial_state, control_sequence, wheel_base
+        )
+        if jnp.all(jnp.isfinite(trajectory)):
+            return trajectory
+
+        # Fall back to a zero-control rollout so SQP linearization stays finite.
+        zero_controls = jnp.zeros_like(control_sequence)
+        return self._rollout_nominal_trajectory(
+            initial_state, zero_controls, wheel_base
+        )
 
     def _update_problem_parameters(
         self,
@@ -455,14 +531,14 @@ class SQPMPC:
             previous_states, previous_controls, wheel_base
         )
 
-        self.As.value = np.array(As_values)
-        self.Bs.value = np.array(Bs_values)
-        self.Cs.value = np.array(Cs_values)
+        self.As.value = _to_cvxpy_param(As_values)
+        self.Bs.value = _to_cvxpy_param(Bs_values)
+        self.Cs.value = _to_cvxpy_param(Cs_values)
 
-        self.initial_state.value = np.array(current_state)
-        self.reference_states.value = np.array(reference_trajectory)
-        self.previous_states.value = np.array(previous_states)
-        self.previous_controls.value = np.array(previous_controls)
+        self.initial_state.value = _to_cvxpy_param(current_state)
+        self.reference_states.value = _to_cvxpy_param(reference_trajectory)
+        self.previous_states.value = _to_cvxpy_param(previous_states)
+        self.previous_controls.value = _to_cvxpy_param(previous_controls)
 
         if self.n_obs > 0 and self.G_obs is not None and self.h_obs is not None:
             # Linearize about the RRT-based reference (collision-free), not the
@@ -643,7 +719,7 @@ class SQPMPC:
         else:
             previous_controls = jnp.zeros((self.H, CONTROL_DIM))
 
-        previous_states = self._rollout_nominal_trajectory(
+        previous_states = self._rollout_nominal_trajectory_safe(
             current_state, previous_controls, wb
         )
 
@@ -657,13 +733,14 @@ class SQPMPC:
             )
 
             if not self._solve_problem():
-                # QP infeasible / inaccurate — keep previous iterate, don't crash
-                print("MPC solve failed, continuing with previous iterate")
+                if self.verbose:
+                    print("MPC solve failed, continuing with previous iterate")
                 break
 
             assert self.states is not None and self.controls is not None
             new_controls = jnp.array(self.controls.value)
-            print("u =", np.array(new_controls[0]))
+            if self.verbose:
+                print("u =", np.array(new_controls[0]))
 
             if float(jnp.linalg.norm(new_controls - previous_controls)) < self.sqp_tol:
                 previous_controls = new_controls
@@ -671,7 +748,7 @@ class SQPMPC:
 
             previous_controls = new_controls
             # Re-linearize about the *nonlinear* rollout, not the QP state trajectory
-            previous_states = self._rollout_nominal_trajectory(
+            previous_states = self._rollout_nominal_trajectory_safe(
                 current_state, previous_controls, wb
             )
 

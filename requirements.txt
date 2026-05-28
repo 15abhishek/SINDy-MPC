@@ -13,6 +13,7 @@ equinox>=0.11.0
 cvxpy>=1.4.0
 osqp>=0.6.3          # fast QP solver for SQP-MPC (homework 07_mpc pattern)
 pysindy>=1.7.5    # Required for ME569
+joblib>=1.3.0     # Persist fitted SINDy models (scripts/02_train_sindy.py)
 
 # --- DATA, VISION & SIMULATION (Hybrid-VLA) ---
 pillow>=8.0.0

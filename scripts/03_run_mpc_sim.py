@@ -21,62 +21,86 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
 
+from types import ModuleType
+
+from sindympc.config.beamng_defaults import (
+    BEAMNG_DT,
+    BEAMNG_GOAL_SLOW_RADIUS_M,
+    BEAMNG_GOAL_THRESHOLD_M,
+    BEAMNG_GOAL_XY,
+    BEAMNG_INITIAL_SPEED_MPS,
+    BEAMNG_RRT_STEP_SIZE,
+    BEAMNG_START_XY,
+    BEAMNG_TARGET_SPEED_MPS,
+    BEAMNG_X_BOUNDS,
+    BEAMNG_Y_BOUNDS,
+)
 from sindympc.controllers.sqp_mpc import CONTROL_DIM, STATE_DIM, SQPMPC
-from sindympc.dynamics.bicycle_model import rk4_step
+from sindympc.dynamics import DynamicsName, get_dynamics
 from sindympc.planners.rrt import RRT
 
 # -----------------------------------------------------------------------------
-# Map / scenario (aligned with sindympc/utils/visualize_rrt.py obstacles)
+# Dynamics plant: "bicycle" (kinematic) or "sindy" (data/sindy_model.npz)
+# RRT is geometric only; this switch affects MPC + closed-loop simulation.
+# -----------------------------------------------------------------------------
+# DYNAMICS_MODEL: DynamicsName = "bicycle"
+DYNAMICS_MODEL: DynamicsName = "sindy"
+# MPC internal model (linearization + nominal rollout). Bicycle predictor + SINDy
+# plant is usually much smoother than SINDy-on-SINDy for this project.
+MPC_DYNAMICS_MODEL: DynamicsName = (
+    "bicycle" if DYNAMICS_MODEL == "sindy" else DYNAMICS_MODEL
+)
+
+# -----------------------------------------------------------------------------
+# Map / scenario — BeamNG world frame (matches data/trajectory.jsonl & SINDy training)
 # -----------------------------------------------------------------------------
 
-GOAL_POSITION: Tuple[float, float] = (10, 10)
+GOAL_POSITION: Tuple[float, float] = BEAMNG_GOAL_XY
 
-_INIT_HEADING = float(np.arctan2(GOAL_POSITION[1] - 0.1, GOAL_POSITION[0] - 0.1))
-START_STATE = jnp.array([0.1, 0.1, _INIT_HEADING, 0.5])  # [x, y, theta, v]
-
-# RRT uses (x, y) start/goal; match the simulation start/goal positions
-RRT_START: Tuple[float, float] = (float(START_STATE[0]), float(START_STATE[1]))
-RRT_GOAL: Tuple[float, float] = GOAL_POSITION
-
-OBSTACLE_LIST: List[Tuple[float, float, float]] = [
-    # (x, y, radius)
-    # (3, 5, 1),
-    # (1.5, 1.5, 1),
-    # (6, 4, 1),
-#     (8, 2, 1),
-#     (8, 8, 1),
-#     (8, 5, 1),
-#     (5, 8, 1),
-#     (7, 3, 1),
-#     (3, 7, 1),
-#     (7, 7, 1),
-]
-
-OBSTACLE_LIST: List[Tuple[float, float, float]] = [
-    (
-        np.random.uniform(1, 9),      # x
-        np.random.uniform(1, 9),      # y
-        np.random.uniform(0.8, 1.3),  # radius (1 ± 0.5)
+_INIT_HEADING = float(
+    np.arctan2(
+        GOAL_POSITION[1] - BEAMNG_START_XY[1],
+        GOAL_POSITION[0] - BEAMNG_START_XY[0],
     )
-    for _ in range(np.random.randint(7, 10))
-]
+)
+START_STATE = jnp.array(
+    [
+        BEAMNG_START_XY[0],
+        BEAMNG_START_XY[1],
+        _INIT_HEADING,
+        BEAMNG_INITIAL_SPEED_MPS,
+    ]
+)  # [x, y, theta, v]
 
-# RRT planner parameters (from visualize_rrt.py)
-RRT_STEP_SIZE: float = 0.5
-RRT_MAX_ITER: int = 5000
-PADDING_FRACTION: float = 0.15
+RRT_START: Tuple[float, float] = BEAMNG_START_XY
+RRT_GOAL: Tuple[float, float] = GOAL_POSITION
+RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
+    BEAMNG_X_BOUNDS,
+    BEAMNG_Y_BOUNDS,
+)
 
-# Simulation parameters
-DT: float = 0.05
-MAX_SIM_STEPS: int = 600
-GOAL_THRESHOLD: float = 0.2  # [m] position error to stop simulation
+# Optional obstacles in the driven corridor (empty for open-road replay)
+OBSTACLE_LIST: List[Tuple[float, float, float]] = []
+
+# RRT planner parameters (scaled for ~100+ m routes)
+RRT_STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
+RRT_MAX_ITER: int = 8000
+PADDING_FRACTION: float = 0.05  # bounds already set explicitly
+
+# Simulation parameters (dt matches telemetry used for SINDy)
+DT: float = BEAMNG_DT
+MAX_SIM_STEPS: int = 1000
+GOAL_THRESHOLD: float = BEAMNG_GOAL_THRESHOLD_M
 
 # Vehicle / MPC parameters
 WHEEL_BASE: float = 2.5
 MAX_ACCELERATION: float = 1.0
-MAX_STEERING_ANGLE: float = 1.2
+# Match SINDy training envelope (BEAMNG_CONTROL_HIGH[1] == 1.0 rad)
+MAX_STEERING_ANGLE: float = 1.0
 MPC_HORIZON: int = 25
-TARGET_SPEED: float = 2.0   # increase later if needed
+TARGET_SPEED: float = (
+    4.0 if DYNAMICS_MODEL == "sindy" else BEAMNG_TARGET_SPEED_MPS
+)
 
 # Cost matrices (tune as needed)
 Q = jnp.diag(jnp.array([
@@ -85,10 +109,15 @@ Q = jnp.diag(jnp.array([
     3.0,    # theta
     0.1,    # velocity
 ]))
-R = jnp.diag(jnp.array([
-    0.03,   # acceleration penalty
-    0.005,   # steering penalty (was too high — prevented turning)
-]))
+_USE_SINDY_PLANT = DYNAMICS_MODEL == "sindy"
+R_ACCEL = 0.05 if _USE_SINDY_PLANT else 0.03
+R_STEER = 0.2 if _USE_SINDY_PLANT else 0.005
+R = jnp.diag(jnp.array([R_ACCEL, R_STEER]))
+R_DELTA = jnp.diag(
+    jnp.array([0.08, 12.0] if _USE_SINDY_PLANT else [0.1, 1.0])
+)
+R_TRP = jnp.diag(jnp.array([0.05, 0.05])) if _USE_SINDY_PLANT else None
+SQP_MAX_ITER = 5 if _USE_SINDY_PLANT else 3
 QN = jnp.diag(jnp.array([
     80.0,  # terminal x — pull onto goal at end of path
     80.0,  # terminal y
@@ -96,13 +125,14 @@ QN = jnp.diag(jnp.array([
     1.0,
 ]))
 OBSTACLE_MARGIN: float = 0.35
-GOAL_SLOW_RADIUS: float = 3.0  # mirrors controller goal-phase logic
+GOAL_SLOW_RADIUS: float = BEAMNG_GOAL_SLOW_RADIUS_M
 
 def run_rrt_planner() -> Tuple[Optional[List[Tuple[float, float]]], RRT]:
     """Run RRT once and return waypoints plus the planner instance."""
     planner = RRT(
         start=RRT_START,
         goal=RRT_GOAL,
+        bounds=RRT_BOUNDS,
         padding_fraction=PADDING_FRACTION,
         obstacle_list=OBSTACLE_LIST,
         step_size=RRT_STEP_SIZE,
@@ -112,9 +142,10 @@ def run_rrt_planner() -> Tuple[Optional[List[Tuple[float, float]]], RRT]:
     return path, planner
 
 
-def build_mpc_controller() -> SQPMPC:
-    """Construct the SQP-MPC controller with simulation tuning parameters."""
-    return SQPMPC(
+def build_mpc_controller(mpc_dynamics: ModuleType) -> SQPMPC:
+    """Construct SQP-MPC; ``mpc_dynamics`` is the model used inside the optimizer."""
+    use_fd = mpc_dynamics.__name__ == "sindy_model"
+    kwargs: dict = dict(
         Q=Q,
         R=R,
         H=MPC_HORIZON,
@@ -122,15 +153,21 @@ def build_mpc_controller() -> SQPMPC:
         max_acceleration=MAX_ACCELERATION,
         max_steering_angle=MAX_STEERING_ANGLE,
         wheel_base=WHEEL_BASE,
-        sqp_max_iter=3,
+        sqp_max_iter=SQP_MAX_ITER,
         solver="OSQP",
         target_speed=TARGET_SPEED,
         QN=QN,
-        # obstacle_list=OBSTACLE_LIST,
-        obstacle_list=[],   # temporary, remove later
+        obstacle_list=[],
         obstacle_margin=OBSTACLE_MARGIN,
         goal_position=GOAL_POSITION,
+        rk4_step_fn=mpc_dynamics.rk4_step,
+        use_fd_linearization=use_fd,
+        R_delta=R_DELTA,
+        verbose=False,
     )
+    if R_TRP is not None:
+        kwargs["R_trp"] = R_TRP
+    return SQPMPC(**kwargs)
 
 
 def plot_simulation_results(
@@ -187,7 +224,10 @@ def plot_simulation_results(
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
-    ax.set_title("RRT + SQP-MPC Closed-Loop Simulation")
+    title = f"RRT + SQP-MPC (plant={DYNAMICS_MODEL}"
+    if MPC_DYNAMICS_MODEL != DYNAMICS_MODEL:
+        title += f", mpc={MPC_DYNAMICS_MODEL}"
+    ax.set_title(title + ")")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -196,6 +236,13 @@ def plot_simulation_results(
 
 def main() -> None:
     """Run closed-loop RRT + MPC simulation and visualize results."""
+    plant = get_dynamics(DYNAMICS_MODEL)
+    mpc_model = get_dynamics(MPC_DYNAMICS_MODEL)
+    print(
+        f"[Dynamics] plant={DYNAMICS_MODEL}, "
+        f"mpc_predictor={MPC_DYNAMICS_MODEL}"
+    )
+
     # --- High-level planner (run once) ---
     rrt_path, _rrt_planner = run_rrt_planner()
     if rrt_path is None:
@@ -217,7 +264,7 @@ def main() -> None:
     rrt_path = smoothed_path
 
     # --- Low-level controller ---
-    mpc = build_mpc_controller()
+    mpc = build_mpc_controller(mpc_model)
     mpc.reset_path_tracking()
 
     # --- Simulation state and logs ---
@@ -232,7 +279,7 @@ def main() -> None:
 
         u = mpc.compute_action(state, rrt_path, wheel_base=WHEEL_BASE)
         control_history.append(u)
-        state = rk4_step(state, u, WHEEL_BASE, DT)
+        state = plant.rk4_step(state, u, WHEEL_BASE, DT)
         state_history.append(state)
 
         goal_xy = jnp.array(GOAL_POSITION)
