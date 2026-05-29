@@ -34,7 +34,7 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
     BEAMNG_X_BOUNDS,
     BEAMNG_Y_BOUNDS,
 )
-PADDING_FRACTION = 0.05
+PADDING_FRACTION = 0.005
 
 OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
     DEFAULT_NUM_OBSTACLES,

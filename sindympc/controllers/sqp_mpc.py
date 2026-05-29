@@ -179,9 +179,12 @@ class SQPMPC:
         self.n_obs = len(self.obstacle_list)
 
         self.rk4_step_fn = rk4_step_fn or bicycle_rk4_step
+        self.use_fd_linearization = use_fd_linearization
         self._linearize_fn = (
             linearize_dynamics_fd if use_fd_linearization else linearize_dynamics
         )
+        self._jit_rollout_cache: dict[float, Callable] = {}
+        self._jit_linearize_cache: dict[float, Callable] = {}
 
         # Warm-start control sequence across MPC calls (receding horizon)
         self._last_controls: Optional[jnp.ndarray] = None
@@ -282,7 +285,7 @@ class SQPMPC:
                 verbose=False,
                 eps_abs=1e-3,
                 eps_rel=1e-3,
-                max_iter=8000,
+                max_iter=4000,
                 polish=False,
             )
         else:
@@ -305,6 +308,46 @@ class SQPMPC:
             return self.rk4_step_fn(state, control, wheel_base, self.dt)
 
         return f
+
+    def _get_jit_rollout(self, wheel_base: float):
+        """Cached ``jax.jit`` rollout (autodiff path only)."""
+        wb = float(wheel_base)
+        if wb not in self._jit_rollout_cache:
+            dt = self.dt
+            rk4 = self.rk4_step_fn
+
+            def step(state: jnp.ndarray, control: jnp.ndarray):
+                next_state = rk4(state, control, wb, dt)
+                return next_state, next_state
+
+            @jax.jit
+            def rollout(initial_state: jnp.ndarray, control_sequence: jnp.ndarray):
+                _, trajectory = jax.lax.scan(step, initial_state, control_sequence)
+                return jnp.concatenate([initial_state[None, :], trajectory], axis=0)
+
+            self._jit_rollout_cache[wb] = rollout
+        return self._jit_rollout_cache[wb]
+
+    def _get_jit_linearize_along(self, wheel_base: float):
+        """Cached ``jax.jit`` vmap linearization over the horizon."""
+        wb = float(wheel_base)
+        if wb not in self._jit_linearize_cache:
+            dt = self.dt
+            rk4 = self.rk4_step_fn
+
+            def dynamics(state: jnp.ndarray, control: jnp.ndarray) -> jnp.ndarray:
+                return rk4(state, control, wb, dt)
+
+            @jax.jit
+            def linearize_along(
+                nominal_states: jnp.ndarray, nominal_controls: jnp.ndarray
+            ):
+                return jax.vmap(
+                    lambda s, u: linearize_dynamics(dynamics, s, u),
+                )(nominal_states, nominal_controls)
+
+            self._jit_linearize_cache[wb] = linearize_along
+        return self._jit_linearize_cache[wb]
 
     def _setup_cvxpy_problem(self) -> None:
         """Build the CVXPY problem once (homework 05 cell structure).
@@ -438,6 +481,9 @@ class SQPMPC:
         Returns:
             Nominal states, shape (H + 1, STATE_DIM).
         """
+        if not self.use_fd_linearization:
+            return self._get_jit_rollout(wheel_base)(initial_state, control_sequence)
+
         def step(state: jnp.ndarray, control: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
             next_state = self.rk4_step_fn(state, control, wheel_base, self.dt)
             return next_state, next_state
@@ -463,6 +509,11 @@ class SQPMPC:
             Bs: (H, STATE_DIM, CONTROL_DIM)
             Cs: (H, STATE_DIM)
         """
+        if not self.use_fd_linearization:
+            return self._get_jit_linearize_along(wheel_base)(
+                nominal_states[:-1], nominal_controls
+            )
+
         dynamics = self._make_discrete_dynamics(wheel_base)
         return jax.vmap(self._linearize_fn, in_axes=(None, 0, 0))(
             dynamics, nominal_states[:-1], nominal_controls
@@ -543,8 +594,7 @@ class SQPMPC:
         if self.n_obs > 0 and self.G_obs is not None and self.h_obs is not None:
             # Linearize about the RRT-based reference (collision-free), not the
             # rollout, which often cuts through obstacles when tracking is poor.
-            # G_obs, h_obs = self._linearize_obstacle_constraints(reference_trajectory)         # original
-            G_obs, h_obs = self._linearize_obstacle_constraints(previous_states)                # temporary, if doesn't work
+            G_obs, h_obs = self._linearize_obstacle_constraints(reference_trajectory)
             self.G_obs.value = G_obs
             self.h_obs.value = h_obs
 

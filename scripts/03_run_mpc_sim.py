@@ -9,6 +9,7 @@ Pipeline:
 from __future__ import annotations
 
 import os
+import time
 
 # Force CPU JAX if CUDA plugins are installed but the driver is incompatible.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -44,13 +45,14 @@ from sindympc.utils.obstacles import (
     DEFAULT_RADIUS_RANGE,
     sample_random_obstacles,
 )
+from sindympc.utils.path_utils import densify_polyline, smooth_path_moving_average
 
 # -----------------------------------------------------------------------------
 # Dynamics plant: "bicycle" (kinematic) or "sindy" (data/sindy_model.npz)
 # RRT is geometric only; this switch affects MPC + closed-loop simulation.
 # -----------------------------------------------------------------------------
-# DYNAMICS_MODEL: DynamicsName = "bicycle"
-DYNAMICS_MODEL: DynamicsName = "sindy"
+DYNAMICS_MODEL: DynamicsName = "bicycle"
+# DYNAMICS_MODEL: DynamicsName = "sindy"
 # MPC internal model — set equal to plant for pure SINDy vs pure bicycle comparison.
 # Use mpc="bicycle" only as a deliberate ablation (predictor/plant mismatch).
 MPC_DYNAMICS_MODEL: DynamicsName = DYNAMICS_MODEL
@@ -109,9 +111,19 @@ MAX_ACCELERATION: float = 1.0
 # Match SINDy training envelope (BEAMNG_CONTROL_HIGH[1] == 1.0 rad)
 MAX_STEERING_ANGLE: float = 1.0
 MPC_HORIZON: int = 25
-TARGET_SPEED: float = (
-    4.0 if DYNAMICS_MODEL == "sindy" else BEAMNG_TARGET_SPEED_MPS
+PATH_SPACING_M: float = 3.0
+# RRT avoids obstacles geometrically. Linearized obstacle QPs (15 disks × H stages)
+# often yield inaccurate OSQP solutions and hurt both bicycle and SINDy tracking.
+# Set SINDYMPC_MPC_OBSTACLES=1 to experiment with in-QP obstacles (not recommended).
+USE_MPC_OBSTACLE_CONSTRAINTS: bool = os.environ.get(
+    "SINDYMPC_MPC_OBSTACLES", ""
+).lower() in ("1", "true", "yes")
+PROFILE_MPC: bool = os.environ.get("SINDYMPC_PROFILE_MPC", "").lower() in (
+    "1",
+    "true",
+    "yes",
 )
+TARGET_SPEED: float = BEAMNG_TARGET_SPEED_MPS
 
 # Cost matrices (tune as needed)
 Q = jnp.diag(jnp.array([
@@ -128,7 +140,7 @@ R_DELTA = jnp.diag(
     jnp.array([0.08, 12.0] if _USE_SINDY_PLANT else [0.1, 1.0])
 )
 R_TRP = jnp.diag(jnp.array([0.05, 0.05])) if _USE_SINDY_PLANT else None
-SQP_MAX_ITER = 5 if _USE_SINDY_PLANT else 3
+SQP_MAX_ITER = 3
 QN = jnp.diag(jnp.array([
     80.0,  # terminal x — pull onto goal at end of path
     80.0,  # terminal y
@@ -155,7 +167,8 @@ def run_rrt_planner() -> Tuple[Optional[List[Tuple[float, float]]], RRT]:
 
 def build_mpc_controller(mpc_dynamics: ModuleType) -> SQPMPC:
     """Construct SQP-MPC; ``mpc_dynamics`` is the model used inside the optimizer."""
-    use_fd = mpc_dynamics.__name__ == "sindy_model"
+    use_fd = False
+    mpc_obstacles = OBSTACLE_LIST if USE_MPC_OBSTACLE_CONSTRAINTS else []
     kwargs: dict = dict(
         Q=Q,
         R=R,
@@ -168,7 +181,7 @@ def build_mpc_controller(mpc_dynamics: ModuleType) -> SQPMPC:
         solver="OSQP",
         target_speed=TARGET_SPEED,
         QN=QN,
-        obstacle_list=[],
+        obstacle_list=mpc_obstacles,
         obstacle_margin=OBSTACLE_MARGIN,
         goal_position=GOAL_POSITION,
         rk4_step_fn=mpc_dynamics.rk4_step,
@@ -262,19 +275,15 @@ def main() -> None:
 
     print(f"RRT path found with {len(rrt_path)} waypoints.")
 
-    # Simple path smoothing     (temporary, remove later if doesn't work)
-    smoothed_path = [rrt_path[0]]
-
-    for i in range(1, len(rrt_path) - 1):
-        x = 0.25 * rrt_path[i - 1][0] + 0.5 * rrt_path[i][0] + 0.25 * rrt_path[i + 1][0]
-        y = 0.25 * rrt_path[i - 1][1] + 0.5 * rrt_path[i][1] + 0.25 * rrt_path[i + 1][1]
-        smoothed_path.append((x, y))
-
-    smoothed_path.append(rrt_path[-1])
-
-    rrt_path = smoothed_path
+    rrt_path = densify_polyline(
+        smooth_path_moving_average(rrt_path, passes=2),
+        spacing_m=PATH_SPACING_M,
+    )
+    print(f"Reference path: {len(rrt_path)} waypoints (~{PATH_SPACING_M} m spacing)")
 
     # --- Low-level controller ---
+    use_fd_linearization = False
+    mpc_obstacles = OBSTACLE_LIST if USE_MPC_OBSTACLE_CONSTRAINTS else []
     mpc = build_mpc_controller(mpc_model)
     mpc.reset_path_tracking()
 
@@ -283,12 +292,20 @@ def main() -> None:
     state_history: List[jnp.ndarray] = [state]
     control_history: List[jnp.ndarray] = []
 
+    print(
+        f"MPC: H={MPC_HORIZON}, sqp_iter={SQP_MAX_ITER}, "
+        f"obstacles_in_qp={len(mpc_obstacles)}, "
+        f"jax_linearization={not use_fd_linearization}"
+    )
     print("Running closed-loop simulation...")
+    mpc_times: list[float] = []
     for step in range(MAX_SIM_STEPS):
         if step % 10 == 0:
             print(f"  step {step}/{MAX_SIM_STEPS}", flush=True)
 
+        t0 = time.perf_counter()
         u = mpc.compute_action(state, rrt_path, wheel_base=WHEEL_BASE)
+        mpc_times.append(time.perf_counter() - t0)
         control_history.append(u)
         state = plant.rk4_step(state, u, WHEEL_BASE, DT)
         state_history.append(state)
@@ -306,7 +323,14 @@ def main() -> None:
 
     executed_trajectory = np.array(state_history)
 
-    print(f"Simulation finished after {len(state_history) - 1} steps.")
+    n_steps = len(state_history) - 1
+    print(f"Simulation finished after {n_steps} steps.")
+    if PROFILE_MPC and mpc_times:
+        arr = np.asarray(mpc_times)
+        print(
+            f"MPC timing: mean {arr.mean():.3f}s/step, "
+            f"max {arr.max():.3f}s, total {arr.sum():.1f}s"
+        )
     plot_simulation_results(
         obstacle_list=OBSTACLE_LIST,
         rrt_path=rrt_path,
