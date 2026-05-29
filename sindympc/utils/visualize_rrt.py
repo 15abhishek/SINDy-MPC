@@ -4,7 +4,6 @@ Runs the planner from ``sindympc.planners.rrt`` on a user-defined scenario and
 plots the search tree, final path, and circular obstacles.
 """
 
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -18,6 +17,12 @@ from sindympc.config.beamng_defaults import (
     BEAMNG_Y_BOUNDS,
 )
 from sindympc.planners.rrt import Node, RRT
+from sindympc.utils.obstacles import (
+    DEFAULT_MIN_DIST_FROM_POINTS,
+    DEFAULT_NUM_OBSTACLES,
+    DEFAULT_RADIUS_RANGE,
+    sample_random_obstacles,
+)
 
 # -----------------------------------------------------------------------------
 # Scenario — BeamNG world frame (same as data/trajectory.jsonl)
@@ -31,7 +36,15 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
 )
 PADDING_FRACTION = 0.05
 
-OBSTACLE_LIST: List[Tuple[float, float, float]] = []
+OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
+    DEFAULT_NUM_OBSTACLES,
+    BEAMNG_X_BOUNDS,
+    BEAMNG_Y_BOUNDS,
+    DEFAULT_RADIUS_RANGE,
+    START,
+    GOAL,
+    min_dist_from_points=DEFAULT_MIN_DIST_FROM_POINTS,
+)
 
 STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
 MAX_ITER: int = 8000

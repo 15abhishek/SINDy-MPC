@@ -38,6 +38,12 @@ from sindympc.config.beamng_defaults import (
 from sindympc.controllers.sqp_mpc import CONTROL_DIM, STATE_DIM, SQPMPC
 from sindympc.dynamics import DynamicsName, get_dynamics
 from sindympc.planners.rrt import RRT
+from sindympc.utils.obstacles import (
+    DEFAULT_MIN_DIST_FROM_POINTS,
+    DEFAULT_NUM_OBSTACLES,
+    DEFAULT_RADIUS_RANGE,
+    sample_random_obstacles,
+)
 
 # -----------------------------------------------------------------------------
 # Dynamics plant: "bicycle" (kinematic) or "sindy" (data/sindy_model.npz)
@@ -45,11 +51,9 @@ from sindympc.planners.rrt import RRT
 # -----------------------------------------------------------------------------
 # DYNAMICS_MODEL: DynamicsName = "bicycle"
 DYNAMICS_MODEL: DynamicsName = "sindy"
-# MPC internal model (linearization + nominal rollout). Bicycle predictor + SINDy
-# plant is usually much smoother than SINDy-on-SINDy for this project.
-MPC_DYNAMICS_MODEL: DynamicsName = (
-    "bicycle" if DYNAMICS_MODEL == "sindy" else DYNAMICS_MODEL
-)
+# MPC internal model — set equal to plant for pure SINDy vs pure bicycle comparison.
+# Use mpc="bicycle" only as a deliberate ablation (predictor/plant mismatch).
+MPC_DYNAMICS_MODEL: DynamicsName = DYNAMICS_MODEL
 
 # -----------------------------------------------------------------------------
 # Map / scenario — BeamNG world frame (matches data/trajectory.jsonl & SINDy training)
@@ -79,17 +83,24 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
     BEAMNG_Y_BOUNDS,
 )
 
-# Optional obstacles in the driven corridor (empty for open-road replay)
-OBSTACLE_LIST: List[Tuple[float, float, float]] = []
+OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
+    DEFAULT_NUM_OBSTACLES,
+    BEAMNG_X_BOUNDS,
+    BEAMNG_Y_BOUNDS,
+    DEFAULT_RADIUS_RANGE,
+    RRT_START,
+    RRT_GOAL,
+    min_dist_from_points=DEFAULT_MIN_DIST_FROM_POINTS,
+)
 
 # RRT planner parameters (scaled for ~100+ m routes)
 RRT_STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
-RRT_MAX_ITER: int = 8000
+RRT_MAX_ITER: int = 10000
 PADDING_FRACTION: float = 0.05  # bounds already set explicitly
 
 # Simulation parameters (dt matches telemetry used for SINDy)
 DT: float = BEAMNG_DT
-MAX_SIM_STEPS: int = 1000
+MAX_SIM_STEPS: int = 500
 GOAL_THRESHOLD: float = BEAMNG_GOAL_THRESHOLD_M
 
 # Vehicle / MPC parameters

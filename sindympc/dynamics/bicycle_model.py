@@ -4,8 +4,8 @@ def continuous_dynamics(state, control, wheel_base, dt):
     """
     Define the bicycle dynamics equations here. (derived from https://thomasfermi.github.io/Algorithms-for-Automated-Driving/Control/BicycleModel.html)
 
-    State: [x, y, theta, v]
-    Control: [a, delta]
+    State: [x, y, theta, v]     # x, y: position, theta: heading, v: velocity
+    Control: [a, delta]         # a: acceleration, delta: steering angle
     Wheel base: wheel_base
     Time step: dt
     """

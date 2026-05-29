@@ -10,6 +10,7 @@ import numpy as np
 
 from sindympc.data.telemetry import load_aligned_telemetry
 from sindympc.dynamics import get_dynamics
+from sindympc.system_id.sindy_training import controls_for_library_mode
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TRAJ = PROJECT_ROOT / "data" / "trajectory.jsonl"
@@ -18,7 +19,11 @@ WHEEL_BASE = 2.5
 
 
 def training_controls_to_mpc(controls: np.ndarray) -> np.ndarray:
-    """Invert ``sindy_model`` throttle map: throttle = 0.5 * (a + 1)."""
+    """Kinematic models use ``[a, delta]`` (same as MPC). Legacy throttle maps to ``a``."""
+    from sindympc.dynamics.sindy_model import _uses_acceleration_control
+
+    if _uses_acceleration_control:
+        return np.asarray(controls, dtype=np.float64)
     mpc = np.empty_like(controls)
     mpc[:, 0] = 2.0 * controls[:, 0] - 1.0
     mpc[:, 1] = controls[:, 1]
@@ -42,7 +47,9 @@ def rollout_rmse(
     x = jnp.asarray(states[start])
     for k in range(start, end):
         u = jnp.asarray(u_mpc[k])
-        x_pred = dynamics.rk4_step(x, u, WHEEL_BASE, dt, clip_state=False)
+        x_pred = dynamics.rk4_step(
+            x, u, WHEEL_BASE, dt, clip_state=False, control_frame="training"
+        )
         x_true = jnp.asarray(states[k + 1])
         errs.append(float(jnp.linalg.norm(x_pred - x_true)))
         x = x_pred
@@ -74,7 +81,9 @@ def teacher_forced_rmse(
     for k in range(start, end):
         x0 = jnp.asarray(states[k])
         u = jnp.asarray(u_mpc[k])
-        x_pred = dynamics.rk4_step(x0, u, WHEEL_BASE, dt, clip_state=False)
+        x_pred = dynamics.rk4_step(
+            x0, u, WHEEL_BASE, dt, clip_state=False, control_frame="training"
+        )
         x_true = jnp.asarray(states[k + 1])
         e = x_pred - x_true
 
@@ -110,7 +119,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    states, controls, dt = load_aligned_telemetry(args.trajectory, args.controls)
+    states, controls_log, timestamps_ms, dt = load_aligned_telemetry(
+        args.trajectory, args.controls
+    )
+    controls = controls_for_library_mode(
+        states, controls_log, timestamps_ms, "kinematic"
+    )
     if args.start == 0:
         x, y = states[:, 0], states[:, 1]
         in_corridor = (x >= 150.0) & (x <= 305.0) & (y >= -60.0) & (y <= 20.0)

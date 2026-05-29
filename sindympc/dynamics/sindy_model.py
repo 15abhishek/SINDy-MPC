@@ -18,6 +18,7 @@ from sindympc.config.beamng_defaults import (
 from sindympc.system_id.sindy_features import (
     IDX_DELTA,
     IDX_THETA,
+    IDX_U0,
     IDX_V,
     MAX_DELTA_FOR_TAN,
 )
@@ -29,6 +30,10 @@ _n_poly_features: int = 0
 _model_version: int = 1
 _model_path: Optional[Path] = None
 _poly_input_indices: Optional[jnp.ndarray] = None
+_n_kinematic_features: int = 4
+_n_residual_trig_features: int = 0
+_wheel_base: float = 2.5
+_uses_acceleration_control: bool = False
 
 DEFAULT_MODEL_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "sindy_model.npz"
@@ -36,6 +41,9 @@ DEFAULT_MODEL_PATH = (
 LEGACY_PICKLE_PATH = DEFAULT_MODEL_PATH.with_suffix(".pkl")
 MODEL_VERSION_BICYCLE = 2
 MODEL_VERSION_BICYCLE_LOCAL_POLY = 3
+MODEL_VERSION_KINEMATIC = 4  # legacy: throttle, v·tan(δ)
+MODEL_VERSION_RESIDUAL_V2 = 5
+MODEL_VERSION_KINEMATIC_A = 6  # v·tan(δ)/L and acceleration a (pure bicycle basis)
 
 
 def save_model_npz(model: object, path: Path | str = DEFAULT_MODEL_PATH) -> Path:
@@ -47,24 +55,32 @@ def save_model_npz(model: object, path: Path | str = DEFAULT_MODEL_PATH) -> Path
         # BicycleFeatureLibrary
         poly_powers = np.asarray(fl.powers_, dtype=np.int32)
         n_poly = int(poly_powers.shape[0])
-        poly_input_indices = np.asarray(
-            getattr(fl, "poly_input_indices", np.arange(poly_powers.shape[1])),
-            dtype=np.int32,
-        )
-        version = (
-            MODEL_VERSION_BICYCLE_LOCAL_POLY
-            if poly_input_indices.shape[0] != poly_powers.shape[1]
-            or not np.array_equal(poly_input_indices, np.arange(poly_powers.shape[1]))
-            else MODEL_VERSION_BICYCLE
-        )
+        poly_input_indices = np.asarray(fl.poly_input_indices, dtype=np.int32)
+        lib_mode = getattr(fl, "mode", "residual")
+        n_kin = int(getattr(fl, "n_kinematic_features", 4))
+        n_rt = int(getattr(fl, "n_residual_trig_features", 0))
+        if lib_mode == "kinematic":
+            version = (
+                MODEL_VERSION_KINEMATIC_A
+                if getattr(fl, "_use_acceleration", False)
+                else MODEL_VERSION_KINEMATIC
+            )
+        elif n_rt > 0 or n_poly > 0:
+            version = MODEL_VERSION_RESIDUAL_V2
+        else:
+            version = MODEL_VERSION_BICYCLE_LOCAL_POLY
     elif hasattr(fl, "libraries"):
         # Legacy ConcatLibrary fallback — first child polynomial
         poly_powers = np.asarray(fl.libraries[0].powers_, dtype=np.int32)
         n_poly = int(poly_powers.shape[0])
         version = 1
         poly_input_indices = np.arange(poly_powers.shape[1], dtype=np.int32)
+        n_kin = 0
+        n_rt = 0
     else:
         raise TypeError("Unsupported feature library for NPZ export.")
+
+    wb = float(getattr(fl, "wheel_base", 2.5))
 
     np.savez(
         resolved,
@@ -73,12 +89,17 @@ def save_model_npz(model: object, path: Path | str = DEFAULT_MODEL_PATH) -> Path
         n_poly_features=np.array([n_poly], dtype=np.int32),
         model_version=np.array([version], dtype=np.int32),
         poly_input_indices=poly_input_indices,
+        n_kinematic_features=np.array([n_kin], dtype=np.int32),
+        n_residual_trig_features=np.array([n_rt], dtype=np.int32),
+        wheel_base=np.array([wb], dtype=np.float64),
     )
     return resolved
 
 
 def _load_npz(path: Path) -> None:
-    global _coefficients, _poly_powers, _n_poly_features, _model_version, _model_path, _poly_input_indices
+    global _coefficients, _poly_powers, _n_poly_features, _model_version, _model_path
+    global _poly_input_indices, _n_kinematic_features, _n_residual_trig_features
+    global _wheel_base, _uses_acceleration_control
     archive = np.load(path)
     _coefficients = jnp.asarray(archive["coefficients"])
     _model_version = int(np.asarray(archive.get("model_version", [1])).reshape(-1)[0])
@@ -87,6 +108,17 @@ def _load_npz(path: Path) -> None:
         if "poly_input_indices" in archive
         else None
     )
+    _n_kinematic_features = int(
+        np.asarray(archive.get("n_kinematic_features", [4])).reshape(-1)[0]
+    )
+    _n_residual_trig_features = int(
+        np.asarray(archive.get("n_residual_trig_features", [0])).reshape(-1)[0]
+    )
+    _wheel_base = float(np.asarray(archive.get("wheel_base", [2.5])).reshape(-1)[0])
+    _uses_acceleration_control = _model_version == MODEL_VERSION_KINEMATIC_A
+    if _model_version < MODEL_VERSION_RESIDUAL_V2:
+        _n_residual_trig_features = 6 if _model_version >= MODEL_VERSION_BICYCLE else 0
+        _n_kinematic_features = 0 if _model_version < MODEL_VERSION_RESIDUAL_V2 else 4
 
     if "poly_powers" in archive:
         _poly_powers = jnp.asarray(archive["poly_powers"])
@@ -155,14 +187,13 @@ _CONTROL_HIGH = jnp.asarray(BEAMNG_CONTROL_HIGH)
 
 
 def _map_mpc_control_to_training(control: jnp.ndarray) -> jnp.ndarray:
-    """Map MPC ``[a, delta]`` to SINDy training inputs ``[throttle, delta]``.
-
-    Training data uses BeamNG **throttle** in ``[0, 1]``. MPC uses signed
-    **acceleration** in ``[-1, 1]``. Without this map, negative ``a`` is clipped
-    to zero throttle and positive ``a`` is misinterpreted.
-    """
-    throttle = 0.5 * (control[0] + 1.0)
+    """Map MPC ``[a, delta]`` to the control coordinates used at train time."""
     delta = jnp.clip(control[1], _CONTROL_LOW[1], _CONTROL_HIGH[1])
+    if _uses_acceleration_control:
+        a = jnp.clip(control[0], -1.0, 1.0)
+        return jnp.array([a, delta])
+    throttle = 0.5 * (control[0] + 1.0)
+    throttle = jnp.clip(throttle, _CONTROL_LOW[0], _CONTROL_HIGH[0])
     return jnp.array([throttle, delta])
 
 
@@ -193,8 +224,43 @@ def _polynomial_features(xu: jnp.ndarray, powers: jnp.ndarray) -> jnp.ndarray:
     return jnp.prod(xu**powers, axis=1)
 
 
-def _bicycle_trig_features(xu: jnp.ndarray) -> jnp.ndarray:
-    """sin θ, cos θ, tan δ, v sin θ, v cos θ, v tan δ — matches training library."""
+def _kinematic_bicycle_features(xu: jnp.ndarray, wheel_base: float) -> jnp.ndarray:
+    """v cos θ, v sin θ, (v tan δ)/L, a — pure kinematic basis (model v6)."""
+    theta = xu[IDX_THETA]
+    v = xu[IDX_V]
+    delta = xu[IDX_DELTA]
+    u0 = xu[IDX_U0]
+    tan_delta = jnp.tan(jnp.clip(delta, -MAX_DELTA_FOR_TAN, MAX_DELTA_FOR_TAN))
+    inv_l = 1.0 / jnp.maximum(wheel_base, 1e-6)
+    return jnp.array(
+        [
+            v * jnp.cos(theta),
+            v * jnp.sin(theta),
+            v * tan_delta * inv_l,
+            u0,
+        ]
+    )
+
+
+def _kinematic_legacy_features(xu: jnp.ndarray) -> jnp.ndarray:
+    """Legacy v4: v cos θ, v sin θ, v tan δ, throttle."""
+    theta = xu[IDX_THETA]
+    v = xu[IDX_V]
+    delta = xu[IDX_DELTA]
+    throttle = xu[IDX_U0]
+    tan_delta = jnp.tan(jnp.clip(delta, -MAX_DELTA_FOR_TAN, MAX_DELTA_FOR_TAN))
+    return jnp.array(
+        [
+            v * jnp.cos(theta),
+            v * jnp.sin(theta),
+            v * tan_delta,
+            throttle,
+        ]
+    )
+
+
+def _legacy_bicycle_trig_features(xu: jnp.ndarray) -> jnp.ndarray:
+    """Legacy v1–v3 library: sin θ, cos θ, tan δ, v sin θ, v cos θ, v tan δ."""
     theta = xu[IDX_THETA]
     v = xu[IDX_V]
     delta = xu[IDX_DELTA]
@@ -213,6 +279,14 @@ def _bicycle_trig_features(xu: jnp.ndarray) -> jnp.ndarray:
     )
 
 
+def _residual_extra_trig_features(xu: jnp.ndarray) -> jnp.ndarray:
+    """sin θ, cos θ, tan δ — residual library only (v2 layout)."""
+    theta = xu[IDX_THETA]
+    delta = xu[IDX_DELTA]
+    tan_delta = jnp.tan(jnp.clip(delta, -MAX_DELTA_FOR_TAN, MAX_DELTA_FOR_TAN))
+    return jnp.array([jnp.sin(theta), jnp.cos(theta), tan_delta])
+
+
 def _feature_vector(
     state: jnp.ndarray,
     control: jnp.ndarray,
@@ -223,14 +297,29 @@ def _feature_vector(
     state, control = _preprocess_inputs(state, control, clip_state=clip_state)
     xu = jnp.concatenate([state, control])
 
+    if version == MODEL_VERSION_KINEMATIC_A:
+        return _kinematic_bicycle_features(xu, _wheel_base)
+
+    if version == MODEL_VERSION_KINEMATIC:
+        return _kinematic_legacy_features(xu)
+
+    if version >= MODEL_VERSION_RESIDUAL_V2:
+        parts = []
+        if n_poly > 0 and _poly_input_indices is not None:
+            parts.append(_polynomial_features(xu[_poly_input_indices], powers))
+        parts.append(_kinematic_legacy_features(xu))
+        if _n_residual_trig_features > 0:
+            parts.append(_residual_extra_trig_features(xu))
+        return jnp.concatenate(parts)
+
     if version >= MODEL_VERSION_BICYCLE:
         if _poly_input_indices is not None and version >= MODEL_VERSION_BICYCLE_LOCAL_POLY:
             poly_in = xu[_poly_input_indices]
         else:
             poly_in = xu
-        poly = _polynomial_features(poly_in, powers)
-        trig = _bicycle_trig_features(xu)
-        return jnp.concatenate([poly, trig])
+        poly = _polynomial_features(poly_in, powers) if n_poly > 0 else jnp.array([])
+        trig = _legacy_bicycle_trig_features(xu)
+        return jnp.concatenate([poly, trig]) if n_poly > 0 else trig
 
     return _polynomial_features(xu, powers)
 
@@ -242,9 +331,10 @@ def continuous_dynamics(
     dt: float,
     *,
     clip_state: bool = True,
+    control_frame: str = "mpc",
 ) -> jnp.ndarray:
-    """Evaluate Ẋ = f(x, u) from exported SINDy coefficients."""
-    del wheel_base, dt
+    """Evaluate Ẋ = f(x, u) from exported SINDy coefficients (pure learned RHS)."""
+    del wheel_base, dt, control_frame
     coefficients, _, _, _ = _require_artifacts()
     features = _feature_vector(state, control, clip_state=clip_state)
     return coefficients @ features
@@ -257,18 +347,20 @@ def rk4_step(
     dt: float,
     *,
     clip_state: bool = True,
+    control_frame: str = "mpc",
 ) -> jnp.ndarray:
     """RK4 integrate SINDy dynamics (same signature as :mod:`bicycle_model`)."""
     half_dt = 0.5 * dt
-    f1 = continuous_dynamics(state, control, wheel_base, dt, clip_state=clip_state)
+    kwargs = dict(clip_state=clip_state, control_frame=control_frame)
+    f1 = continuous_dynamics(state, control, wheel_base, dt, **kwargs)
     f2 = continuous_dynamics(
-        state + half_dt * f1, control, wheel_base, half_dt, clip_state=clip_state
+        state + half_dt * f1, control, wheel_base, half_dt, **kwargs
     )
     f3 = continuous_dynamics(
-        state + half_dt * f2, control, wheel_base, half_dt, clip_state=clip_state
+        state + half_dt * f2, control, wheel_base, half_dt, **kwargs
     )
     f4 = continuous_dynamics(
-        state + dt * f3, control, wheel_base, half_dt, clip_state=clip_state
+        state + dt * f3, control, wheel_base, half_dt, **kwargs
     )
     next_state = state + (dt / 6.0) * (f1 + 2.0 * f2 + 2.0 * f3 + f4)
     next_state = jnp.nan_to_num(next_state, nan=0.0, posinf=1e6, neginf=-1e6)
