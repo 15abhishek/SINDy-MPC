@@ -127,7 +127,14 @@ def main() -> None:
     )
     if args.start == 0:
         x, y = states[:, 0], states[:, 1]
-        in_corridor = (x >= 150.0) & (x <= 305.0) & (y >= -60.0) & (y <= 20.0)
+        from sindympc.config.beamng_defaults import BEAMNG_STATE_HIGH, BEAMNG_STATE_LOW
+
+        in_corridor = (
+            (x >= BEAMNG_STATE_LOW[0])
+            & (x <= BEAMNG_STATE_HIGH[0])
+            & (y >= BEAMNG_STATE_LOW[1])
+            & (y <= BEAMNG_STATE_HIGH[1])
+        )
         # Find a start index whose entire validation window stays inside corridor,
         # otherwise the dynamics clamp will dominate the error metric.
         window = int(args.steps)

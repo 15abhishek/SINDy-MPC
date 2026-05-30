@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 Obstacle = Tuple[float, float, float]  # (x, y, radius) [m]
 
-DEFAULT_NUM_OBSTACLES = 15
+DEFAULT_NUM_OBSTACLES = 0
 DEFAULT_RADIUS_RANGE = (2.0, 10.0)
 DEFAULT_MIN_DIST_FROM_POINTS = 10.0
 DEFAULT_MAX_TRIES = 5000
@@ -71,3 +71,35 @@ def sample_random_obstacles(
     if len(obs) < num:
         print(f"Warning: Only placed {len(obs)} obstacles (couldn't fit {num})")
     return obs
+
+
+def nearest_obstacles(
+    position: Tuple[float, float],
+    obstacles: Sequence[Obstacle],
+    k: int,
+) -> List[Obstacle]:
+    """Return up to ``k`` obstacles with smallest center-to-point distance."""
+    if k <= 0 or not obstacles:
+        return []
+    px, py = position
+
+    def _dist(obs: Obstacle) -> float:
+        ox, oy, _ = obs
+        return math.hypot(ox - px, oy - py)
+
+    ranked = sorted(obstacles, key=_dist)
+    return list(ranked[: min(k, len(ranked))])
+
+
+def pad_obstacle_list(
+    obstacles: Sequence[Obstacle],
+    count: int,
+    *,
+    pad_center: Tuple[float, float] = (1.0e6, 1.0e6),
+    pad_radius: float = 0.05,
+) -> List[Obstacle]:
+    """Pad or truncate to fixed length (MPC QP size is fixed at init)."""
+    out = list(obstacles[:count])
+    while len(out) < count:
+        out.append((pad_center[0], pad_center[1], pad_radius))
+    return out

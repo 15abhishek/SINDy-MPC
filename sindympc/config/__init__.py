@@ -9,12 +9,17 @@ from sindympc.config.beamng_defaults import (
     BEAMNG_GOAL_XY,
     BEAMNG_INITIAL_SPEED_MPS,
     BEAMNG_RRT_STEP_SIZE,
+    BEAMNG_SCENARIO_MARGIN_M,
+    BEAMNG_SCENARIO_X_BOUNDS,
+    BEAMNG_SCENARIO_Y_BOUNDS,
     BEAMNG_START_XY,
     BEAMNG_STATE_HIGH,
     BEAMNG_STATE_LOW,
     BEAMNG_TARGET_SPEED_MPS,
     BEAMNG_X_BOUNDS,
     BEAMNG_Y_BOUNDS,
+    beamng_scenario_xy_bounds,
+    beamng_state_limits,
 )
 
 __all__ = [
@@ -26,10 +31,15 @@ __all__ = [
     "BEAMNG_GOAL_XY",
     "BEAMNG_INITIAL_SPEED_MPS",
     "BEAMNG_RRT_STEP_SIZE",
+    "BEAMNG_SCENARIO_MARGIN_M",
+    "BEAMNG_SCENARIO_X_BOUNDS",
+    "BEAMNG_SCENARIO_Y_BOUNDS",
     "BEAMNG_START_XY",
     "BEAMNG_STATE_HIGH",
     "BEAMNG_STATE_LOW",
     "BEAMNG_TARGET_SPEED_MPS",
     "BEAMNG_X_BOUNDS",
     "BEAMNG_Y_BOUNDS",
+    "beamng_scenario_xy_bounds",
+    "beamng_state_limits",
 ]

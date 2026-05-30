@@ -2,8 +2,16 @@
 
 Runs the planner from ``sindympc.planners.rrt`` on a user-defined scenario and
 plots the search tree, final path, and circular obstacles.
+
+Environment variables (same as ``03_run_mpc_sim.py``):
+    SINDYMPC_STATIC_PLOT=0|1   — final static figure (default 1)
+    SINDYMPC_ANIMATE=0|1       — write GIF replay (default 0)
+    SINDYMPC_ANIMATE_SAVE=path — GIF path when animate enabled
 """
 
+from __future__ import annotations
+
+import os
 from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -12,11 +20,15 @@ from matplotlib.patches import Circle
 from sindympc.config.beamng_defaults import (
     BEAMNG_GOAL_XY,
     BEAMNG_RRT_STEP_SIZE,
+    BEAMNG_SCENARIO_X_BOUNDS,
+    BEAMNG_SCENARIO_Y_BOUNDS,
     BEAMNG_START_XY,
     BEAMNG_X_BOUNDS,
     BEAMNG_Y_BOUNDS,
 )
+from sindympc.utils.plot_utils import apply_scenario_axes
 from sindympc.planners.rrt import Node, RRT
+from sindympc.utils.sim_animation import AnimationConfig, animate_rrt_growth
 from sindympc.utils.obstacles import (
     DEFAULT_MIN_DIST_FROM_POINTS,
     DEFAULT_NUM_OBSTACLES,
@@ -38,8 +50,8 @@ PADDING_FRACTION = 0.005
 
 OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
     DEFAULT_NUM_OBSTACLES,
-    BEAMNG_X_BOUNDS,
-    BEAMNG_Y_BOUNDS,
+    BEAMNG_SCENARIO_X_BOUNDS,
+    BEAMNG_SCENARIO_Y_BOUNDS,
     DEFAULT_RADIUS_RANGE,
     START,
     GOAL,
@@ -48,6 +60,19 @@ OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
 
 STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
 MAX_ITER: int = 8000
+
+SHOW_STATIC_PLOT = os.environ.get("SINDYMPC_STATIC_PLOT", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+SHOW_ANIMATION = os.environ.get("SINDYMPC_ANIMATE", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+ANIMATION_SAVE_PATH = os.environ.get("SINDYMPC_ANIMATE_SAVE") or None
+ANIMATION_INTERVAL_MS = int(os.environ.get("SINDYMPC_ANIMATE_INTERVAL_MS", "40"))
 
 
 def run_rrt_planner(
@@ -153,12 +178,12 @@ def visualize_rrt(
     ax.plot(start[0], start[1], "go", markersize=10, label="Start", zorder=5)
     ax.plot(goal[0], goal[1], "r*", markersize=14, label="Goal", zorder=5)
 
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
+    extra = [start, goal]
+    if path:
+        extra.extend(path)
+    apply_scenario_axes(ax, extra_xy=extra)
     ax.set_title("RRT Planner")
     ax.legend()
-    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
@@ -179,13 +204,27 @@ def main() -> None:
     if path is None:
         print("RRT did not find a path. The tree will still be plotted.")
 
-    visualize_rrt(
-        planner=planner,
-        path=path,
-        start=START,
-        goal=GOAL,
-        obstacle_list=OBSTACLE_LIST,
-    )
+    if SHOW_STATIC_PLOT:
+        visualize_rrt(
+            planner=planner,
+            path=path,
+            start=START,
+            goal=GOAL,
+            obstacle_list=OBSTACLE_LIST,
+        )
+    if SHOW_ANIMATION:
+        animate_rrt_growth(
+            planner.nodes,
+            path=path,
+            obstacle_list=OBSTACLE_LIST,
+            start=START,
+            goal=GOAL,
+            title="RRT growth",
+            config=AnimationConfig(interval_ms=ANIMATION_INTERVAL_MS),
+            save_path=ANIMATION_SAVE_PATH or "results/rrt_growth.gif",
+            show=False,
+        )
+        print(f"Animation saved to {ANIMATION_SAVE_PATH or 'results/rrt_growth.gif'}")
 
 
 if __name__ == "__main__":
