@@ -6,13 +6,30 @@ Import these in planners, MPC scripts, and dynamics clamps for final BeamNG test
 
 from __future__ import annotations
 
+import math
 from typing import Tuple
 
 import numpy as np
 
-# First / last trajectory samples (tick 5 and 15000 in trajectory.jsonl)
-BEAMNG_START_XY: Tuple[float, float] = (200, -40)
-BEAMNG_GOAL_XY: Tuple[float, float] = (274, 150)
+# 3D spawn / goal poses (BeamNG world frame, e.g. GridMap v2)
+BEAMNG_SPAWN_POS: Tuple[float, float, float] = (-122.011, -187.990, 100.330)
+BEAMNG_SPAWN_ROT: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+BEAMNG_GOAL_POS: Tuple[float, float, float] = (-90.316, -92.625, 100.317)
+BEAMNG_GOAL_ROT: Tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.0)
+
+# 2D planning / MPC frame (XY slices — controllers and RRT use these only)
+BEAMNG_START_XY: Tuple[float, float] = (BEAMNG_SPAWN_POS[0], BEAMNG_SPAWN_POS[1])
+BEAMNG_GOAL_XY: Tuple[float, float] = (BEAMNG_GOAL_POS[0], BEAMNG_GOAL_POS[1])
+
+# Default initial yaw: aligned with the start→goal leg (override with BEAMNG_SPAWN_ROT if needed)
+BEAMNG_PATH_HEADING: float = math.atan2(
+    BEAMNG_GOAL_XY[1] - BEAMNG_START_XY[1],
+    BEAMNG_GOAL_XY[0] - BEAMNG_START_XY[0],
+)
+
+# Backward-compatible aliases (deprecated spelling)
+BeamNG_SPAWN_POS = BEAMNG_SPAWN_POS
+BeamNG_SPAWN_ROT = BEAMNG_SPAWN_ROT
 
 # Nominal sample period in collected logs (100 ms between trajectory rows)
 BEAMNG_DT: float = 0.1
@@ -54,8 +71,8 @@ BEAMNG_CONTROL_LOW = np.array([0.0, -1.0])   # throttle, steering in log
 BEAMNG_CONTROL_HIGH = np.array([1.0, 1.0])
 
 # RRT / MPC tuning
-BEAMNG_RRT_STEP_SIZE: float = 4.0
+BEAMNG_RRT_STEP_SIZE: float = 0.5
 BEAMNG_GOAL_THRESHOLD_M: float = 1.0
 BEAMNG_GOAL_SLOW_RADIUS_M: float = 20.0
 BEAMNG_TARGET_SPEED_MPS: float = 5.0
-BEAMNG_INITIAL_SPEED_MPS: float = 0.5
+BEAMNG_INITIAL_SPEED_MPS: float = 0.1

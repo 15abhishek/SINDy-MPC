@@ -50,6 +50,9 @@ class MPPIController:
         obstacle_margin: float = 0.35,
         w_obstacle: float = 500.0,
         w_cross_track: float = 30.0,
+        w_goal_xy: float = 0.0,
+        w_goal_v: float = 0.0,
+        goal_slow_radius: float = 20.0,
         R_delta: Optional[jnp.ndarray] = None,
         seed: int = 0,
     ) -> None:
@@ -72,6 +75,9 @@ class MPPIController:
         self.obstacle_margin = obstacle_margin
         self.w_obstacle = w_obstacle
         self.w_cross_track = w_cross_track
+        self.w_goal_xy = w_goal_xy
+        self.w_goal_v = w_goal_v
+        self.goal_slow_radius = goal_slow_radius
         self._waypoints_xy: Optional[np.ndarray] = None
         self._R_delta = (
             np.asarray(R_delta, dtype=np.float64)
@@ -146,6 +152,18 @@ class MPPIController:
         err[2] = np.arctan2(np.sin(err[2]), np.cos(err[2]))
         return float(err @ self.QN @ err)
 
+    def _rollout_goal_cost(self, trajectory: np.ndarray) -> float:
+        """Terminal goal XY + horizon speed penalty (discourage coasting past goal)."""
+        if self.goal_position is None:
+            return 0.0
+        gx, gy = self.goal_position
+        last = trajectory[-1]
+        dx = float(last[0] - gx)
+        dy = float(last[1] - gy)
+        terminal_xy = self.w_goal_xy * (dx * dx + dy * dy)
+        speed_sum = float(np.sum(trajectory[:, 3] ** 2))
+        return terminal_xy + self.w_goal_v * speed_sum
+
     def _rollout_path_deviation_cost(self, trajectory: np.ndarray) -> float:
         """Sum of nearest-waypoint distances along a rollout (fast path-following proxy)."""
         if self._waypoints_xy is None or self.w_cross_track <= 0.0:
@@ -181,6 +199,7 @@ class MPPIController:
 
             total += self._terminal_state_cost(trajectories[k, self.H], reference[self.H])
             total += self._rollout_path_deviation_cost(trajectories[k])
+            total += self._rollout_goal_cost(trajectories[k])
             costs[k] = total
 
         return costs
@@ -216,6 +235,7 @@ class MPPIController:
             target_speed=self.target_speed,
             goal_position=self.goal_position,
             last_arc_s=self._last_arc_s,
+            goal_slow_radius=self.goal_slow_radius,
         )
         self.last_arc_s = self._last_arc_s
         ref_np = np.asarray(reference, dtype=np.float64)
@@ -242,7 +262,16 @@ class MPPIController:
                     current_state[1] - self.goal_position[1],
                 )
             )
-            if dist < 1.0 and float(current_state[3]) > 0.2:
+            v_now = float(current_state[3])
+            # Tiered braking (SQP-style); SINDy needs earlier / stronger decel than bicycle.
+            if dist < 8.0 and v_now > 0.5:
+                scale = min(1.0, v_now / max(self.target_speed, 0.5))
+                u0 = jnp.array(
+                    [min(float(u0[0]), -scale * self.max_acceleration), float(u0[1])]
+                )
+            if dist < 2.5 and v_now > 0.12:
+                u0 = jnp.array([-self.max_acceleration, 0.0])
+            if dist < 1.0 and v_now > 0.05:
                 u0 = jnp.array([-self.max_acceleration, 0.0])
 
         return u0

@@ -59,7 +59,8 @@ from sindympc.utils.sim_animation import (
 # -----------------------------------------------------------------------------
 # Dynamics plant: "bicycle" or "sindy"
 # -----------------------------------------------------------------------------
-DYNAMICS_MODEL: DynamicsName = "sindy"
+# DYNAMICS_MODEL: DynamicsName = "sindy"
+DYNAMICS_MODEL: DynamicsName = "bicycle"
 _plant_override = os.environ.get("SINDYMPC_PLANT", "").strip().lower()
 if _plant_override in ("bicycle", "sindy"):
     DYNAMICS_MODEL = _plant_override  # type: ignore[assignment]
@@ -124,7 +125,13 @@ MAX_ACCELERATION: float = 1.0
 MAX_STEERING_ANGLE: float = 1.0
 HORIZON: int = int(os.environ.get("SINDYMPC_MPPI_HORIZON", "25"))
 PATH_SPACING_M: float = 3.0
-TARGET_SPEED: float = BEAMNG_TARGET_SPEED_MPS
+# Cruise reference for MPPI (lower than BeamNG max — easier for SINDy to brake at goal).
+TARGET_SPEED: float = float(
+    os.environ.get(
+        "SINDYMPC_MPPI_TARGET_SPEED",
+        "3.5" if _USE_SINDY_PLANT else str(BEAMNG_TARGET_SPEED_MPS),
+    )
+)
 
 # MPPI hyperparameters (HybridVLA-style sampling + softmax)
 MPPI_NUM_SAMPLES: int = int(os.environ.get("SINDYMPC_MPPI_SAMPLES", "256"))
@@ -161,14 +168,16 @@ ANIMATION_SAVE_PATH: Optional[str] = (
 )
 ANIMATION_INTERVAL_MS: int = int(os.environ.get("SINDYMPC_ANIMATE_INTERVAL_MS", "50"))
 
-Q = jnp.diag(jnp.array([15.0, 15.0, 3.0, 0.1]))
+Q = jnp.diag(jnp.array([15.0, 15.0, 3.0, 2.0 if _USE_SINDY_PLANT else 0.1]))
 R_ACCEL = 0.05 if _USE_SINDY_PLANT else 0.03
 R_STEER = 0.2 if _USE_SINDY_PLANT else 0.005
 R = jnp.diag(jnp.array([R_ACCEL, R_STEER]))
 R_DELTA = jnp.diag(
     jnp.array([0.08, 12.0] if _USE_SINDY_PLANT else [0.1, 1.0])
 )
-QN = jnp.diag(jnp.array([80.0, 80.0, 8.0, 1.0]))
+QN = jnp.diag(jnp.array([80.0, 80.0, 8.0, 5.0 if _USE_SINDY_PLANT else 1.0]))
+MPPI_W_GOAL_XY: float = float(os.environ.get("SINDYMPC_MPPI_W_GOAL", "0"))
+MPPI_W_GOAL_V: float = float(os.environ.get("SINDYMPC_MPPI_W_GOAL_V", "0"))
 OBSTACLE_MARGIN: float = 1.0
 
 
@@ -208,6 +217,9 @@ def build_mppi_controller(controller_dynamics: ModuleType) -> MPPIController:
         obstacle_margin=OBSTACLE_MARGIN,
         R_delta=R_DELTA,
         w_cross_track=MPPI_W_CROSS_TRACK,
+        w_goal_xy=MPPI_W_GOAL_XY,
+        w_goal_v=MPPI_W_GOAL_V,
+        goal_slow_radius=GOAL_SLOW_RADIUS,
         seed=MPPI_SEED,
     )
 

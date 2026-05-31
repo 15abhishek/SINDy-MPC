@@ -67,7 +67,8 @@ def attach_sensors(vehicle):
     * ``vehicle.state["vel"]``: world velocity ``(vx, vy, vz)``,
     * ``vehicle.state["rotation"]``: quaternion ``(qx, qy, qz, qw)``.
     """
-    vehicle.sensors.attach("state", State())
+    if "state" not in vehicle.sensors.data:
+        vehicle.sensors.attach("state", State())
 
 
 def generate_control_command(step_idx, t):

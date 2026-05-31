@@ -121,6 +121,7 @@ def waypoints_to_reference(
     target_speed: float,
     goal_position: Optional[Tuple[float, float]],
     last_arc_s: Optional[float],
+    goal_slow_radius: float = 20.0,
 ) -> Tuple[jnp.ndarray, float]:
     """Build (H+1, 4) reference [x, y, theta, v] and updated arc-length progress."""
     if not rrt_waypoints:
@@ -169,6 +170,12 @@ def waypoints_to_reference(
 
         gx, gy = goal_position
         goal_theta = heading_along_path(s_max, arc_length, waypoints)
+
+        # Slow down geographically (do not shortcut XY — stay on the RRT polyline).
+        if dist_to_goal < goal_slow_radius:
+            slow = np.clip(dist_to_goal / max(goal_slow_radius, 1e-3), 0.0, 1.0)
+            v_ref *= slow
+
         if near_path_end:
             blend_len = 1.5
             for k in range(horizon + 1):
@@ -176,7 +183,7 @@ def waypoints_to_reference(
                 x_ref[k] = (1.0 - blend) * x_ref[k] + blend * gx
                 y_ref[k] = (1.0 - blend) * y_ref[k] + blend * gy
                 theta_ref[k] = (1.0 - blend) * theta_ref[k] + blend * goal_theta
-                v_ref[k] = (1.0 - blend) * v_ref[k] + blend * target_speed
+                v_ref[k] = (1.0 - blend) * v_ref[k]  # ramp v_ref → 0 at goal
 
             if dist_to_goal < 3.0:
                 slow = np.clip(dist_to_goal / 3.0, 0.0, 1.0)
