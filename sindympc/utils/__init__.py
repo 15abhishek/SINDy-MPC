@@ -1,9 +1,5 @@
 """Shared utilities (visualization, obstacle sampling, etc.)."""
 
-from sindympc.utils.dynamic_obstacles import (
-    DynamicObstacleField,
-    MovingObstacle,
-)
 from sindympc.utils.path_utils import densify_polyline, smooth_path_moving_average
 from sindympc.utils.sim_animation import (
     AnimationConfig,
@@ -37,6 +33,4 @@ __all__ = [
     "nearest_obstacles",
     "pad_obstacle_list",
     "sample_random_obstacles",
-    "DynamicObstacleField",
-    "MovingObstacle",
 ]

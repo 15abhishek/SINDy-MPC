@@ -11,8 +11,8 @@ from typing import Tuple
 import numpy as np
 
 # First / last trajectory samples (tick 5 and 15000 in trajectory.jsonl)
-BEAMNG_START_XY: Tuple[float, float] = (181.509, 4.607)
-BEAMNG_GOAL_XY: Tuple[float, float] = (291.360, 105.020)
+BEAMNG_START_XY: Tuple[float, float] = (200, -40)
+BEAMNG_GOAL_XY: Tuple[float, float] = (274, 150)
 
 # Nominal sample period in collected logs (100 ms between trajectory rows)
 BEAMNG_DT: float = 0.1
@@ -55,7 +55,7 @@ BEAMNG_CONTROL_HIGH = np.array([1.0, 1.0])
 
 # RRT / MPC tuning
 BEAMNG_RRT_STEP_SIZE: float = 4.0
-BEAMNG_GOAL_THRESHOLD_M: float = 5.0
+BEAMNG_GOAL_THRESHOLD_M: float = 1.0
 BEAMNG_GOAL_SLOW_RADIUS_M: float = 20.0
 BEAMNG_TARGET_SPEED_MPS: float = 5.0
 BEAMNG_INITIAL_SPEED_MPS: float = 0.5

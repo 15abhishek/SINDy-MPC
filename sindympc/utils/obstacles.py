@@ -8,11 +8,11 @@ from typing import List, Sequence, Tuple
 
 Obstacle = Tuple[float, float, float]  # (x, y, radius) [m]
 
-DEFAULT_NUM_OBSTACLES = 0
-DEFAULT_RADIUS_RANGE = (2.0, 10.0)
-DEFAULT_MIN_DIST_FROM_POINTS = 10.0
+DEFAULT_NUM_OBSTACLES = 10
+DEFAULT_RADIUS_RANGE = (10.0, 30.0)
+DEFAULT_MIN_DIST_FROM_POINTS = 5.0
 DEFAULT_MAX_TRIES = 5000
-DEFAULT_SEED = 42
+DEFAULT_SEED = random.randint(0, 1000000)
 
 
 def euclidean_distance(

@@ -177,10 +177,6 @@ class SQPMPC:
         self.goal_position = goal_position
         self.n_obs = len(self.obstacle_list)
         self.solver = solver
-        # Optional (H+1) x n_obs disk schedule for time-varying / dynamic obstacles.
-        self._obstacle_horizon: Optional[List[List[Tuple[float, float, float]]]] = (
-            None
-        )
 
         self.rk4_step_fn = rk4_step_fn or bicycle_rk4_step
         self.use_fd_linearization = use_fd_linearization
@@ -218,39 +214,6 @@ class SQPMPC:
         self.problem: Optional[cp.Problem] = None
 
         self._setup_cvxpy_problem()
-
-    def update_obstacle_list(
-        self,
-        obstacle_list: Sequence[Tuple[float, float, float]],
-    ) -> None:
-        """Update obstacle centers for the next QP (length must match init)."""
-        if len(obstacle_list) != self.n_obs:
-            raise ValueError(
-                f"Expected {self.n_obs} obstacles, got {len(obstacle_list)}."
-            )
-        self.obstacle_list = list(obstacle_list)
-
-    def set_obstacle_horizon(
-        self,
-        obstacle_horizon: Sequence[Sequence[Tuple[float, float, float]]],
-    ) -> None:
-        """Per-stage obstacle disks for the prediction horizon (length H+1).
-
-        Stage ``k`` uses ``obstacle_horizon[k]`` when linearizing constraints.
-        Required for moving obstacles so the QP sees future disk positions.
-        """
-        if self.n_obs == 0:
-            return
-        if len(obstacle_horizon) != self.H + 1:
-            raise ValueError(
-                f"obstacle_horizon must have {self.H + 1} rows, got {len(obstacle_horizon)}"
-            )
-        for k, row in enumerate(obstacle_horizon):
-            if len(row) != self.n_obs:
-                raise ValueError(
-                    f"obstacle_horizon[{k}] must have {self.n_obs} disks, got {len(row)}"
-                )
-        self._obstacle_horizon = [list(row) for row in obstacle_horizon]
 
     def reset_path_tracking(self) -> None:
         """Reset path progress and control warm-start (call at start of a new sim)."""
@@ -565,15 +528,9 @@ class SQPMPC:
         h = np.zeros((self.H + 1, self.n_obs), dtype=np.float64)
 
         for k in range(self.H + 1):
-            if self._obstacle_horizon is not None:
-                disks_k = self._obstacle_horizon[k]
-            else:
-                disks_k = self.obstacle_list
-
             x_bar = nominal_states[k]
-            for o, (ox, oy, radius) in enumerate(disks_k):
-                # Inflate disks in the QP (visualization uses true radius).
-                r_eff = radius + self.obstacle_margin + 2.5
+            for o, (ox, oy, radius) in enumerate(self.obstacle_list):
+                r_eff = radius + self.obstacle_margin
                 center = jnp.array([ox, oy], dtype=jnp.float32)
                 x_bar = self._exterior_linearization_state(x_bar, center, r_eff)
 
@@ -624,80 +581,6 @@ class SQPMPC:
         G_obs, h_obs = self._linearize_obstacle_constraints(nominal_states)
         self.G_obs.value = G_obs
         self.h_obs.value = h_obs
-
-    def _reactive_obstacle_adjustment(
-        self,
-        state: jnp.ndarray,
-        control: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """If too close to a disk, steer away and brake (convex QP cannot enforce disks exactly)."""
-        if self.n_obs == 0:
-            return control
-
-        x, y, theta = float(state[0]), float(state[1]), float(state[2])
-        u = np.array(control, dtype=np.float64)
-        steer = float(u[1])
-        accel = float(u[0])
-
-        for ox, oy, radius in self.obstacle_list:
-            if radius <= 1e-6:
-                continue
-            dx, dy = x - ox, y - oy
-            dist = float(np.hypot(dx, dy))
-            safe = radius + self.obstacle_margin + 4.0
-            hard = radius + self.obstacle_margin + 0.5
-            if dist >= safe:
-                continue
-            if dist > 1e-3:
-                away_theta = float(np.arctan2(dy, dx))
-            else:
-                away_theta = theta + np.pi
-            heading_err = float(
-                np.arctan2(
-                    np.sin(away_theta - theta),
-                    np.cos(away_theta - theta),
-                )
-            )
-            if dist < hard:
-                steer = np.sign(heading_err) * self.max_steering_angle
-                accel = -self.max_acceleration
-                break
-            gain = min(3.0, (safe - dist) / max(radius, 1e-3))
-            steer += gain * 1.4 * heading_err
-            accel = min(accel, -0.7 * gain)
-
-        u[0] = np.clip(accel, -self.max_acceleration, self.max_acceleration)
-        u[1] = np.clip(steer, -self.max_steering_angle, self.max_steering_angle)
-        return jnp.array(u)
-
-    def _min_obstacle_clearance(self, state: jnp.ndarray) -> float:
-        """Margin to nearest obstacle disk (positive = outside with margin)."""
-        if self.n_obs == 0:
-            return 1e6
-        x, y = float(state[0]), float(state[1])
-        min_clear = 1e6
-        for ox, oy, radius in self.obstacle_list:
-            clear = float(np.hypot(x - ox, y - oy)) - radius - self.obstacle_margin
-            min_clear = min(min_clear, clear)
-        return min_clear
-
-    def _guard_obstacle_one_step(
-        self,
-        state: jnp.ndarray,
-        control: jnp.ndarray,
-        wheel_base: float,
-    ) -> jnp.ndarray:
-        """One-step lookahead; brake/steer if the plant would enter a disk."""
-        if self.n_obs == 0:
-            return control
-        u = control
-        for _ in range(4):
-            u = self._reactive_obstacle_adjustment(state, u)
-            next_state = self.rk4_step_fn(state, u, wheel_base, self.dt)
-            if self._min_obstacle_clearance(next_state) >= 0.0:
-                return u
-            u = jnp.array([-self.max_acceleration, float(u[1])])
-        return u
 
     def _rollout_nominal_trajectory_safe(
         self,
@@ -966,6 +849,4 @@ class SQPMPC:
             if dist < 1.0 and float(current_state[3]) > 0.2:
                 u0 = jnp.array([-self.max_acceleration, 0.0])
 
-        u0 = self._reactive_obstacle_adjustment(current_state, u0)
-        u0 = self._guard_obstacle_one_step(current_state, u0, wb)
         return u0

@@ -49,6 +49,7 @@ class RRT:
         goal_sample_rate: float = 0.25,
         padding_fraction: float = 0.1,
         bounds: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
+        seed: Optional[int] = None,
     ) -> None:
         self.start = start
         self.goal = goal
@@ -66,6 +67,7 @@ class RRT:
             )
 
         self.nodes: List[Node] = [Node(start[0], start[1], parent=None)]
+        self._rng = np.random.default_rng(seed)
 
     @staticmethod
     def _default_bounds(
@@ -102,11 +104,11 @@ class RRT:
         Returns:
             (x, y) sampled configuration.
         """
-        if np.random.random() < self.goal_sample_rate:
+        if self._rng.random() < self.goal_sample_rate:
             return self.goal
 
-        x = np.random.uniform(self.x_bounds[0], self.x_bounds[1])
-        y = np.random.uniform(self.y_bounds[0], self.y_bounds[1])
+        x = self._rng.uniform(self.x_bounds[0], self.x_bounds[1])
+        y = self._rng.uniform(self.y_bounds[0], self.y_bounds[1])
         return (float(x), float(y))
 
     def _get_nearest_node(self, random_point: Tuple[float, float]) -> Node:

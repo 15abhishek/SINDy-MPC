@@ -7,7 +7,7 @@ offered as an exported GIF (``save_path``) rather than an on-screen animation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,7 +18,6 @@ from sindympc.planners.rrt import Node
 from sindympc.utils.plot_utils import apply_scenario_axes
 
 ObstacleDisk = Tuple[float, float, float]  # (x, y, radius)
-ObstaclesAtStep = Callable[[int], Sequence[ObstacleDisk]]
 
 TRAIL_COLOR = "blue"
 TRAIL_LINEWIDTH = 2.5
@@ -35,6 +34,7 @@ class AnimationConfig:
     vehicle_length_m: float = 4.0
     vehicle_width_m: float = 2.0
     repeat: bool = True
+    max_frames: int = 200  # subsample long sims for GIF export
 
 
 def draw_obstacle_disks(
@@ -101,8 +101,6 @@ def animate_mpc_simulation(
     executed_trajectory: np.ndarray,
     *,
     obstacle_list: Sequence[ObstacleDisk] = (),
-    static_obstacle_list: Sequence[ObstacleDisk] = (),
-    obstacles_at_step: Optional[ObstaclesAtStep] = None,
     rrt_path: Optional[Sequence[Tuple[float, float]]] = None,
     goal_position: Tuple[float, float],
     start_state: np.ndarray,
@@ -123,10 +121,10 @@ def animate_mpc_simulation(
         raise ValueError("executed_trajectory must be shape (N, state_dim) with N >= 1")
 
     n_frames = traj.shape[0]
-    time_varying = obstacles_at_step is not None
-    fixed_static = list(static_obstacle_list) or (
-        list(obstacle_list) if not time_varying else []
-    )
+    stride = max(1, n_frames // max(cfg.max_frames, 1))
+    frame_indices = list(range(0, n_frames, stride))
+    if frame_indices[-1] != n_frames - 1:
+        frame_indices.append(n_frames - 1)
 
     extra = [goal_position, (float(start_state[0]), float(start_state[1]))]
     if rrt_path:
@@ -134,12 +132,8 @@ def animate_mpc_simulation(
     fig, ax = plt.subplots(figsize=figsize)
     _setup_map_axes(ax, trajectory_xy=traj[:, :2], extra_xy=extra)
 
-    if fixed_static:
-        draw_obstacle_disks(ax, fixed_static)
-
-    obstacle_patches: List[Circle] = []
-    if not time_varying and obstacle_list and not fixed_static:
-        obstacle_patches = draw_obstacle_disks(ax, obstacle_list)
+    if obstacle_list:
+        draw_obstacle_disks(ax, obstacle_list)
 
     if rrt_path is not None and len(rrt_path) > 0:
         rx, ry = zip(*rrt_path)
@@ -196,28 +190,14 @@ def animate_mpc_simulation(
     ax.set_title(title)
     ax.legend(loc="upper right")
 
-    def _update_dynamic_obstacles(step: int) -> None:
-        nonlocal obstacle_patches
-        if obstacles_at_step is None:
-            return
-        disks = list(obstacles_at_step(step))
-        for p in obstacle_patches:
-            p.remove()
-        obstacle_patches = draw_obstacle_disks(
-            ax, disks, color="darkorange", alpha=0.65
-        )
-
     def init():
         trail_line.set_data([], [])
         vehicle_body.set_xy(np.zeros((4, 2)))
         time_text.set_text("")
         return trail_line, vehicle_body, time_text
 
-    def update(frame: int):
-        if time_varying:
-            _update_dynamic_obstacles(frame)
-
-        # Cumulative blue trace from start through current frame
+    def update(frame_idx: int):
+        frame = frame_indices[frame_idx]
         trail_line.set_data(traj[: frame + 1, 0], traj[: frame + 1, 1])
         trail_line.set_color(TRAIL_COLOR)
 
@@ -235,16 +215,13 @@ def animate_mpc_simulation(
         t_s = frame * cfg.dt
         time_text.set_text(f"step {frame}  |  t = {t_s:.1f} s")
         ax.set_title(f"{title}  (step {frame}/{n_frames - 1})")
-        artists: list = [trail_line, vehicle_body, time_text]
-        if time_varying:
-            artists.extend(obstacle_patches)
-        return artists
+        return trail_line, vehicle_body, time_text
 
     anim = FuncAnimation(
         fig,
         update,
         init_func=init,
-        frames=n_frames,
+        frames=len(frame_indices),
         interval=cfg.interval_ms,
         repeat=cfg.repeat,
         blit=False,
