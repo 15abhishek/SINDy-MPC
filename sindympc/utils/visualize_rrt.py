@@ -29,12 +29,7 @@ from sindympc.config.beamng_defaults import (
 from sindympc.utils.plot_utils import apply_scenario_axes
 from sindympc.planners.rrt import Node, RRT
 from sindympc.utils.sim_animation import AnimationConfig, animate_rrt_growth
-from sindympc.utils.obstacles import (
-    DEFAULT_MIN_DIST_FROM_POINTS,
-    DEFAULT_NUM_OBSTACLES,
-    DEFAULT_RADIUS_RANGE,
-    sample_random_obstacles,
-)
+from sindympc.utils.obstacles import get_scenario_obstacles
 
 # -----------------------------------------------------------------------------
 # Scenario — BeamNG world frame (same as data/trajectory.jsonl)
@@ -48,15 +43,7 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
 )
 PADDING_FRACTION = 0.005
 
-OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
-    DEFAULT_NUM_OBSTACLES,
-    BEAMNG_SCENARIO_X_BOUNDS,
-    BEAMNG_SCENARIO_Y_BOUNDS,
-    DEFAULT_RADIUS_RANGE,
-    START,
-    GOAL,
-    min_dist_from_points=DEFAULT_MIN_DIST_FROM_POINTS,
-)
+OBSTACLE_LIST: List[Tuple[float, float, float]] = get_scenario_obstacles()
 
 STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
 MAX_ITER: int = 8000

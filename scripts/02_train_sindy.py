@@ -11,6 +11,7 @@ from sindympc.system_id.sindy_features import LibraryMode
 from sindympc.system_id.sindy_training import (
     DEFAULT_WHEEL_BASE,
     audit_kinematic_sign_consistency,
+    audit_theta_steering_consistency,
     control_names_for_mode,
     controls_for_library_mode,
     subsample_training_data,
@@ -18,8 +19,8 @@ from sindympc.system_id.sindy_training import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TRAJECTORY_DATA_PATH = PROJECT_ROOT / "data" / "trajectory.jsonl"
-CONTROL_DATA_PATH = PROJECT_ROOT / "data" / "controls.jsonl"
+TRAJECTORY_DATA_PATH = PROJECT_ROOT / "data" / "high_trajectory.jsonl"
+CONTROL_DATA_PATH = PROJECT_ROOT / "data" / "high_controls.jsonl"
 MODEL_PATH = PROJECT_ROOT / "data" / "sindy_model.npz"
 
 
@@ -140,6 +141,10 @@ def main() -> None:
         audit_kinematic_sign_consistency(
             states, timestamps_ms, wheel_base=args.wheel_base
         )
+        if library_mode == "kinematic":
+            audit_theta_steering_consistency(
+                states, controls, timestamps_ms, wheel_base=args.wheel_base
+            )
 
     u_names = control_names_for_mode(library_mode)
     print(

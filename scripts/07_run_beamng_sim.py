@@ -38,13 +38,14 @@ from matplotlib.patches import Circle
 from types import ModuleType
 
 from sindympc.beamng.helpers import (
-    SpeedPID,
-    mpc_control_to_beamng,
+    BeamNGActuatorMapper,
     poll_vehicle_state_4d,
     quat_from_heading,
 )
+from sindympc.config.scenario_obstacles import BEAMNG_OBSTACLE_GROUND_Z
 from sindympc.config.beamng_defaults import (
     BEAMNG_DT,
+    BEAMNG_GOAL_FULL_SPEED_RADIUS_M,
     BEAMNG_GOAL_SLOW_RADIUS_M,
     BEAMNG_GOAL_THRESHOLD_M,
     BEAMNG_GOAL_XY,
@@ -56,18 +57,15 @@ from sindympc.config.beamng_defaults import (
     BEAMNG_START_XY,
     BEAMNG_TARGET_SPEED_MPS,
 )
+from sindympc.beamng.scenario_obstacles import add_obstacle_cylinders
 from sindympc.controllers.mppi import MPPIController
 from sindympc.controllers.sqp_mpc import SQPMPC
 from sindympc.dynamics import DynamicsName, get_dynamics
 from sindympc.planners.rrt import RRT
-from sindympc.utils.obstacles import (
-    DEFAULT_MIN_DIST_FROM_POINTS,
-    DEFAULT_NUM_OBSTACLES,
-    DEFAULT_RADIUS_RANGE,
-    sample_random_obstacles,
-)
-from sindympc.utils.path_utils import densify_polyline, smooth_path_moving_average
+from sindympc.utils.obstacles import get_scenario_obstacles
+from sindympc.utils.path_utils import chaikin_smooth, densify_polyline, smooth_path_moving_average
 from sindympc.utils.plot_utils import apply_scenario_axes
+from sindympc.utils.benchmark_metrics import compute_max_steps, summarize_run
 from sindympc.utils.sim_animation import TRAIL_COLOR, TRAIL_LABEL, TRAIL_LINEWIDTH
 
 # -----------------------------------------------------------------------------
@@ -93,15 +91,13 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
 )
 
 SIM_SEED = int(os.environ.get("SINDYMPC_SEED", "42"))
-OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
-    DEFAULT_NUM_OBSTACLES,
-    BEAMNG_SCENARIO_X_BOUNDS,
-    BEAMNG_SCENARIO_Y_BOUNDS,
-    DEFAULT_RADIUS_RANGE,
-    RRT_START,
-    RRT_GOAL,
-    min_dist_from_points=DEFAULT_MIN_DIST_FROM_POINTS,
-    seed=SIM_SEED,
+USE_SCENARIO_OBSTACLES = os.environ.get("SINDYMPC_OBSTACLES", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
+OBSTACLE_LIST: List[Tuple[float, float, float]] = (
+    get_scenario_obstacles() if USE_SCENARIO_OBSTACLES else []
 )
 
 DT = BEAMNG_DT
@@ -109,10 +105,13 @@ WHEEL_BASE = 2.5
 MAX_ACCELERATION = 1.0
 MAX_STEERING_ANGLE = 1.0
 MPC_HORIZON = 25
-PATH_SPACING_M = 3.0
+PATH_SPACING_M = 2.0
+PATH_SMOOTH_PASSES = 3
+PATH_CHAIKIN_ITERS = 2
 TARGET_SPEED = BEAMNG_TARGET_SPEED_MPS
 GOAL_THRESHOLD = BEAMNG_GOAL_THRESHOLD_M
 GOAL_SLOW_RADIUS = BEAMNG_GOAL_SLOW_RADIUS_M
+GOAL_FULL_SPEED_RADIUS = BEAMNG_GOAL_FULL_SPEED_RADIUS_M
 
 _MAX_ROUTE_M = float(
     np.hypot(
@@ -120,7 +119,25 @@ _MAX_ROUTE_M = float(
         BEAMNG_GOAL_XY[1] - BEAMNG_START_XY[1],
     )
 )
-DEFAULT_MAX_STEPS = int(np.ceil(_MAX_ROUTE_M / (TARGET_SPEED * DT))) + 150
+DEFAULT_MAX_STEPS = compute_max_steps(_MAX_ROUTE_M, TARGET_SPEED, DT)
+
+
+def resolve_target_speed(
+    args: argparse.Namespace,
+    *,
+    controller_key: str,
+    use_sindy: bool,
+) -> float:
+    """CLI ``--target-speed`` overrides per-controller env defaults."""
+    if getattr(args, "target_speed", None) is not None:
+        return float(args.target_speed)
+    if controller_key == "sqp":
+        env_key = "SINDYMPC_SQP_TARGET_SPEED"
+        default = str(TARGET_SPEED)
+    else:
+        env_key = "SINDYMPC_MPPI_TARGET_SPEED"
+        default = str(TARGET_SPEED)
+    return float(os.environ.get(env_key, default))
 
 Controller = Union[SQPMPC, MPPIController]
 
@@ -180,7 +197,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use BEAMNG_SPAWN_ROT from config instead of path-aligned heading",
     )
-    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
+    parser.add_argument(
+        "--target-speed",
+        type=float,
+        default=None,
+        metavar="MPS",
+        help="Cruise speed setpoint for MPC/MPPI [m/s] (default: env or BEAMNG_TARGET_SPEED_MPS)",
+    )
+    parser.add_argument(
+        "--actuator-profile",
+        choices=("responsive", "smooth"),
+        default=os.environ.get("SINDYMPC_BNG_ACTUATOR_PROFILE", "responsive"),
+        help="BeamNG throttle/brake mapping: responsive (SQP) vs smooth (MPPI-like)",
+    )
+    parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument(
         "--warmup-steps",
         type=int,
@@ -238,22 +268,39 @@ def run_rrt_planner() -> Optional[List[Tuple[float, float]]]:
         padding_fraction=0.05,
         obstacle_list=OBSTACLE_LIST,
         step_size=BEAMNG_RRT_STEP_SIZE,
-        max_iter=10000,
+        max_iter=20000,
         seed=SIM_SEED,
     )
     return planner.plan()
 
 
-def build_sqp_controller(mpc_dynamics: ModuleType, *, use_sindy: bool) -> SQPMPC:
+def build_sqp_controller(
+    mpc_dynamics: ModuleType,
+    *,
+    use_sindy: bool,
+    target_speed: float,
+) -> SQPMPC:
     use_obstacles = os.environ.get("SINDYMPC_MPC_OBSTACLES", "").lower() in (
         "1",
         "true",
         "yes",
     )
-    q = jnp.diag(jnp.array([15.0, 15.0, 3.0, 0.1]))
-    r = jnp.diag(jnp.array([0.05 if use_sindy else 0.03, 0.2 if use_sindy else 0.005]))
-    r_delta = jnp.diag(jnp.array([0.08, 12.0] if use_sindy else [0.1, 1.0]))
-    qn = jnp.diag(jnp.array([80.0, 80.0, 8.0, 1.0]))
+    # JAX sim uses R_steer≈0.005 for bicycle; BeamNG needs more steering penalty + Δu damping.
+    # BeamNG SINDy SQP: strong v tracking + low accel penalty; v_ref uses full target
+    # speed when far from goal (see sqp_mpc._waypoints_to_reference).
+    if use_sindy:
+        q = jnp.diag(jnp.array([15.0, 15.0, 3.0, 15.0]))
+        qn = jnp.diag(jnp.array([80.0, 80.0, 8.0, 12.0]))
+        r_steer = 0.12
+        r_accel = 0.01
+        r_delta = jnp.diag(jnp.array([0.05, 6.0]))
+    else:
+        q = jnp.diag(jnp.array([15.0, 15.0, 4.0, 0.1]))
+        qn = jnp.diag(jnp.array([80.0, 80.0, 8.0, 1.0]))
+        r_steer = 0.08
+        r_accel = 0.03
+        r_delta = jnp.diag(jnp.array([0.1, 8.0]))
+    r = jnp.diag(jnp.array([r_accel, r_steer]))
     kwargs = dict(
         Q=q,
         R=r,
@@ -264,7 +311,7 @@ def build_sqp_controller(mpc_dynamics: ModuleType, *, use_sindy: bool) -> SQPMPC
         wheel_base=WHEEL_BASE,
         sqp_max_iter=3,
         solver="OSQP",
-        target_speed=TARGET_SPEED,
+        target_speed=target_speed,
         QN=qn,
         obstacle_list=list(OBSTACLE_LIST) if use_obstacles else [],
         obstacle_margin=1.0,
@@ -275,26 +322,26 @@ def build_sqp_controller(mpc_dynamics: ModuleType, *, use_sindy: bool) -> SQPMPC
         verbose=False,
     )
     if use_sindy:
-        kwargs["R_trp"] = jnp.diag(jnp.array([0.05, 0.05]))
+        kwargs["R_trp"] = jnp.diag(jnp.array([0.012, 0.03]))
     return SQPMPC(**kwargs)
 
 
-def build_mppi_controller(controller_dynamics: ModuleType, *, use_sindy: bool) -> MPPIController:
+def build_mppi_controller(
+    controller_dynamics: ModuleType,
+    *,
+    use_sindy: bool,
+    target_speed: float,
+) -> MPPIController:
     use_obstacles = os.environ.get("SINDYMPC_MPPI_OBSTACLES", "").lower() in (
         "1",
         "true",
         "yes",
     )
-    target = float(
-        os.environ.get(
-            "SINDYMPC_MPPI_TARGET_SPEED",
-            "3.5" if use_sindy else str(TARGET_SPEED),
-        )
-    )
+    target = target_speed
     return MPPIController(
-        Q=jnp.diag(jnp.array([15.0, 15.0, 3.0, 2.0 if use_sindy else 0.1])),
-        R=jnp.diag(jnp.array([0.05 if use_sindy else 0.03, 0.2 if use_sindy else 0.005])),
-        QN=jnp.diag(jnp.array([80.0, 80.0, 8.0, 5.0 if use_sindy else 1.0])),
+        Q=jnp.diag(jnp.array([15.0, 15.0, 3.0, 4.0 if use_sindy else 0.1])),
+        R=jnp.diag(jnp.array([0.04 if use_sindy else 0.03, 0.18 if use_sindy else 0.005])),
+        QN=jnp.diag(jnp.array([80.0, 80.0, 8.0, 6.0 if use_sindy else 1.0])),
         H=int(os.environ.get("SINDYMPC_MPPI_HORIZON", str(MPC_HORIZON))),
         dt=DT,
         max_acceleration=MAX_ACCELERATION,
@@ -316,10 +363,20 @@ def build_mppi_controller(controller_dynamics: ModuleType, *, use_sindy: bool) -
     )
 
 
-def build_controller(name: str, dynamics: ModuleType, *, use_sindy: bool) -> Controller:
+def build_controller(
+    name: str,
+    dynamics: ModuleType,
+    *,
+    use_sindy: bool,
+    target_speed: float,
+) -> Controller:
     if name == "mppi":
-        return build_mppi_controller(dynamics, use_sindy=use_sindy)
-    return build_sqp_controller(dynamics, use_sindy=use_sindy)
+        return build_mppi_controller(
+            dynamics, use_sindy=use_sindy, target_speed=target_speed,
+        )
+    return build_sqp_controller(
+        dynamics, use_sindy=use_sindy, target_speed=target_speed,
+    )
 
 
 def path_start_heading(rrt_path: List[Tuple[float, float]]) -> float:
@@ -370,6 +427,17 @@ def build_beamng_scenario(
     )
     spawn_pos = (args.spawn_x, args.spawn_y, args.spawn_z)
     scenario.add_vehicle(vehicle, pos=spawn_pos, rot_quat=spawn_rot)
+    if OBSTACLE_LIST:
+        ground_z = float(os.environ.get("SINDYMPC_OBSTACLE_GROUND_Z", BEAMNG_OBSTACLE_GROUND_Z))
+        n_meshes = add_obstacle_cylinders(
+            scenario,
+            OBSTACLE_LIST,
+            ground_z=ground_z,
+        )
+        print(
+            f"[Sim] Spawned {n_meshes} BeamNG obstacle cylinder(s) "
+            f"at z={ground_z:.2f} m"
+        )
     # beamngpy>=1.28 attaches a "state" sensor in Vehicle.__init__
     return scenario, vehicle
 
@@ -445,7 +513,28 @@ def run_live_loop(
     rrt_path: List[Tuple[float, float]],
     args: argparse.Namespace,
 ) -> np.ndarray:
-    speed_pid = SpeedPID(dt=DT)
+    ctrl_key = normalize_controller_name(args.controller)
+    plant = "sindy" if args.dynamics == "sindy" else "bicycle"
+    actuator_mapper = BeamNGActuatorMapper.for_controller(
+        ctrl_key,
+        dt=DT,
+        max_acceleration=MAX_ACCELERATION,
+        max_steering_angle=MAX_STEERING_ANGLE,
+        plant=plant,  # type: ignore[arg-type]
+        profile=getattr(args, "actuator_profile", "responsive"),  # type: ignore[arg-type]
+        target_speed_mps=float(getattr(args, "target_speed_mps", TARGET_SPEED)),
+        goal_position=GOAL_POSITION,
+        goal_slow_radius_m=GOAL_SLOW_RADIUS,
+        full_speed_goal_radius_m=GOAL_FULL_SPEED_RADIUS,
+        sqp_cruise_governor=(ctrl_key == "sqp"),
+    )
+    if os.environ.get("SINDYMPC_BNG_SPEED_HORIZON"):
+        actuator_mapper.speed_horizon_s = float(os.environ["SINDYMPC_BNG_SPEED_HORIZON"])
+    if os.environ.get("SINDYMPC_BNG_SPEED_SMOOTH"):
+        actuator_mapper.desired_speed_alpha = float(os.environ["SINDYMPC_BNG_SPEED_SMOOTH"])
+    if os.environ.get("SINDYMPC_BNG_STEER_SLEW"):
+        actuator_mapper.steer_max_delta = float(os.environ["SINDYMPC_BNG_STEER_SLEW"])
+    actuator_mapper.reset()
     controller.reset_path_tracking()
 
     log_file = None
@@ -455,7 +544,7 @@ def run_live_loop(
 
     print(
         f"[Loop] dt={DT:.3f}s ({SIM_HZ} Hz physics, {STEPS_PER_CTRL} step(s)/tick), "
-        f"max_steps={args.max_steps}"
+        f"max_steps={args.max_steps}, actuator_profile={ctrl_key}"
     )
 
     solve_times: list[float] = []
@@ -473,14 +562,8 @@ def run_live_loop(
             )
             solve_times.append(time.perf_counter() - t0)
 
-            throttle, brake, steering = mpc_control_to_beamng(
-                u,
-                state,
-                vel_vec,
-                dt=DT,
-                max_acceleration=MAX_ACCELERATION,
-                max_steering_angle=MAX_STEERING_ANGLE,
-                speed_pid=speed_pid,
+            throttle, brake, steering = actuator_mapper.map_control(
+                u, state, vel_vec
             )
 
             vehicle.control(
@@ -504,6 +587,9 @@ def run_live_loop(
                 )
 
             if log_file is not None:
+                pos_err = float(
+                    np.hypot(state[0] - GOAL_POSITION[0], state[1] - GOAL_POSITION[1])
+                )
                 record = {
                     "tick": step,
                     "timestamp_ms": sim_time_ms,
@@ -514,6 +600,8 @@ def run_live_loop(
                     "throttle": throttle,
                     "brake": brake,
                     "steering": steering,
+                    "goal_error_m": pos_err,
+                    "solve_time_s": solve_times[-1],
                 }
                 log_file.write(json.dumps(record) + "\n")
 
@@ -542,7 +630,7 @@ def run_live_loop(
             f"max {arr.max():.3f}s, total {arr.sum():.1f}s"
         )
 
-    return np.asarray(trajectory) if trajectory else np.empty((0, 4))
+    return np.asarray(trajectory) if trajectory else np.empty((0, 4)), solve_times
 
 
 def main() -> None:
@@ -551,7 +639,28 @@ def main() -> None:
 
     dynamics_name: DynamicsName = args.dynamics  # type: ignore[assignment]
     controller_key = normalize_controller_name(args.controller)
+    use_sindy = dynamics_name == "sindy"
     dynamics = get_dynamics(dynamics_name)
+    if use_sindy:
+        from sindympc.dynamics.sindy_model import (
+            kinematic_steer_coefficient,
+            theta_steering_gain,
+        )
+
+        steer_c = kinematic_steer_coefficient()
+        gain = theta_steering_gain()
+        if steer_c is not None and abs(steer_c) < 0.5:
+            print(
+                f"[SINDy] weak θ̇ on v·tan(δ)/L (learned {steer_c:+.4f}, nominal +1.0); "
+                f"MPC rollout gain={gain:.2f} (set SINDYMPC_SINDY_THETA_GAIN=1 to disable)"
+            )
+
+    target_speed = resolve_target_speed(
+        args, controller_key=controller_key, use_sindy=use_sindy,
+    )
+    args.target_speed_mps = target_speed
+    if args.max_steps is None:
+        args.max_steps = compute_max_steps(_MAX_ROUTE_M, target_speed, DT)
 
     print(f"[Plan] RRT start={RRT_START}, goal={RRT_GOAL}, obstacles={len(OBSTACLE_LIST)}")
     rrt_path = run_rrt_planner()
@@ -561,18 +670,28 @@ def main() -> None:
 
     print(f"[Plan] RRT path: {len(rrt_path)} waypoints")
     rrt_path = densify_polyline(
-        smooth_path_moving_average(rrt_path, passes=2),
+        smooth_path_moving_average(
+            chaikin_smooth(
+                smooth_path_moving_average(rrt_path, passes=PATH_SMOOTH_PASSES),
+                iterations=PATH_CHAIKIN_ITERS,
+            ),
+            passes=1,
+        ),
         spacing_m=PATH_SPACING_M,
     )
     print(f"[Plan] Reference path: {len(rrt_path)} waypoints (~{PATH_SPACING_M} m spacing)")
 
     controller = build_controller(
-        controller_key, dynamics, use_sindy=(dynamics_name == "sindy"),
+        controller_key,
+        dynamics,
+        use_sindy=use_sindy,
+        target_speed=target_speed,
     )
     ctrl_label = "SQP-MPC" if controller_key == "sqp" else "MPPI"
     print(
-        f"[Controller] {ctrl_label} with {dynamics_name} rollouts, "
-        f"H={MPC_HORIZON}, target_speed={TARGET_SPEED} m/s"
+        f"[Config] controller={ctrl_label}, dynamics={dynamics_name}, "
+        f"target_speed={target_speed:.2f} m/s, max_steps={args.max_steps}, "
+        f"actuator_profile={args.actuator_profile}"
     )
 
     spawn_rot = resolve_spawn_rotation(args, rrt_path)
@@ -586,6 +705,7 @@ def main() -> None:
     scenario, vehicle = build_beamng_scenario(bng, args, spawn_rot)
 
     executed_trajectory = np.empty((0, 4))
+    solve_times: list[float] = []
     bng.open(launch=not args.no_launch)
     try:
         scenario.make(bng)
@@ -619,13 +739,38 @@ def main() -> None:
                 "confirm --map matches beamng_defaults world frame."
             )
 
-        executed_trajectory = run_live_loop(bng, vehicle, controller, rrt_path, args)
+        executed_trajectory, solve_times = run_live_loop(
+            bng, vehicle, controller, rrt_path, args,
+        )
     finally:
         try:
             bng.ui.show_hud()
         except Exception:
             pass
         bng.close()
+
+    summary = summarize_run(
+        args.log_path,
+        rrt_path,
+        GOAL_POSITION,
+        target_speed_mps=target_speed,
+        goal_threshold_m=GOAL_THRESHOLD,
+        goal_slow_radius_m=GOAL_SLOW_RADIUS,
+        dt=DT,
+        solve_times=solve_times if args.profile else None,
+    )
+    summary.update(
+        {
+            "controller": controller_key,
+            "dynamics": dynamics_name,
+        }
+    )
+    print(
+        f"[Metrics] mean_v={summary['mean_speed_mps']:.2f} m/s, "
+        f"final_err={summary['final_goal_error_m']:.2f} m, "
+        f"mean_cte={summary['mean_cross_track_error_m']:.2f} m, "
+        f"mean_thr={summary['mean_throttle']:.3f}, mean_a_mpc={summary['mean_mpc_accel']:.3f}"
+    )
 
     if not args.no_plot:
         plot_path = args.plot_path or default_plot_path(args.controller, dynamics_name)

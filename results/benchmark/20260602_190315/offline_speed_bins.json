@@ -1,0 +1,35 @@
+[
+  {
+    "mode": "offline_openloop",
+    "speed_bin": "low_v_lt2",
+    "n_samples": 287,
+    "bicycle_rmse_xy": 0.01729159141224876,
+    "bicycle_rmse_theta": 0.8748170193257717,
+    "bicycle_rmse_v": 0.033848355399996116,
+    "sindy_rmse_xy": 0.018834570134851597,
+    "sindy_rmse_theta": 0.8745926042131464,
+    "sindy_rmse_v": 0.15600012040853156
+  },
+  {
+    "mode": "offline_openloop",
+    "speed_bin": "med_v_2_4",
+    "n_samples": 116,
+    "bicycle_rmse_xy": 0.006188143580038732,
+    "bicycle_rmse_theta": 0.036664153493704554,
+    "bicycle_rmse_v": 0.02171041762828374,
+    "sindy_rmse_xy": 0.01874002447849549,
+    "sindy_rmse_theta": 0.055481501719637547,
+    "sindy_rmse_v": 0.32128914258924124
+  },
+  {
+    "mode": "offline_openloop",
+    "speed_bin": "high_v_ge4",
+    "n_samples": 2596,
+    "bicycle_rmse_xy": 0.03011336060681499,
+    "bicycle_rmse_theta": 0.2794439191341844,
+    "bicycle_rmse_v": 0.020038357926494672,
+    "sindy_rmse_xy": 0.0399153156845581,
+    "sindy_rmse_theta": 0.2830612173857115,
+    "sindy_rmse_v": 0.1259981363218425
+  }
+]

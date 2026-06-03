@@ -10,6 +10,7 @@ from pysindy.differentiation import SINDyDerivative
 
 from sindympc.system_id.sindy_features import (
     KINEMATIC_FEATURE_NAMES,
+    MAX_DELTA_FOR_TAN,
     BicycleFeatureLibrary,
     LibraryMode,
 )
@@ -221,6 +222,69 @@ def audit_kinematic_sign_consistency(
         print("  → moderate mismatch; check steering sign or low-speed samples.")
 
     return best
+
+
+def audit_theta_steering_consistency(
+    states: np.ndarray,
+    controls: np.ndarray,
+    timestamps_ms: np.ndarray,
+    *,
+    wheel_base: float = DEFAULT_WHEEL_BASE,
+    min_speed: float = 0.5,
+    min_abs_delta: float = 0.02,
+) -> dict:
+    """Check whether finite-difference θ̇ aligns with ``v·tan(δ)/L`` (bicycle yaw rate).
+
+    Compares correlation with the positive and negated steering feature to catch
+  sign flips in logged ``delta`` vs the kinematic library.
+    """
+    states = np.asarray(states, dtype=np.float64)
+    controls = np.asarray(controls, dtype=np.float64)
+    ts = np.asarray(timestamps_ms, dtype=np.float64).reshape(-1)
+    dt_steps = np.diff(ts) / 1000.0
+    thetadot = np.diff(states[:, 2]) / dt_steps
+    v = states[:-1, 3]
+    delta = controls[:-1, 1]
+    tan_delta = np.tan(np.clip(delta, -MAX_DELTA_FOR_TAN, MAX_DELTA_FOR_TAN))
+    inv_l = 1.0 / max(wheel_base, 1e-6)
+    pred_pos = v * tan_delta * inv_l
+    pred_neg = -pred_pos
+    moving = (v >= min_speed) & (np.abs(delta) >= min_abs_delta)
+
+    if int(np.sum(moving)) < 20:
+        print("\n[Steer audit] insufficient turning samples for θ̇ vs v·tan(δ)/L")
+        return {"warning": "insufficient steering samples"}
+
+    corr_pos = float(np.corrcoef(thetadot[moving], pred_pos[moving])[0, 1])
+    corr_neg = float(np.corrcoef(thetadot[moving], pred_neg[moving])[0, 1])
+    weak = max(abs(corr_pos), abs(corr_neg)) < 0.3
+    if weak:
+        steer_sign = 1.0
+    else:
+        steer_sign = 1.0 if corr_pos >= corr_neg else -1.0
+
+    print("\n[Steer audit] θ̇ vs bicycle steering feature (moving + |δ| above min)")
+    print(
+        f"  corr(θ̇, +v·tan(δ)/L) = {corr_pos:+.3f}, "
+        f"corr(θ̇, -v·tan(δ)/L) = {corr_neg:+.3f}  → use coeff {steer_sign:+.0f}"
+    )
+    if weak:
+        print(
+            "  → weak correlation: SG θ̇ noise or non-kinematic yaw in logs."
+        )
+    elif steer_sign < 0:
+        print(
+            "  → logged δ sign may be inverted vs library; "
+            "check steering convention in telemetry."
+        )
+    else:
+        print("  → steering sign matches kinematic library (good).")
+
+    return {
+        "corr_pos": corr_pos,
+        "corr_neg": corr_neg,
+        "steer_sign": steer_sign,
+    }
 
 
 def print_bicycle_comparison(

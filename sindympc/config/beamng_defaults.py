@@ -12,9 +12,9 @@ from typing import Tuple
 import numpy as np
 
 # 3D spawn / goal poses (BeamNG world frame, e.g. GridMap v2)
-BEAMNG_SPAWN_POS: Tuple[float, float, float] = (-122.011, -187.990, 100.330)
+BEAMNG_SPAWN_POS: Tuple[float, float, float] = (-150, -200, 100.330)
 BEAMNG_SPAWN_ROT: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
-BEAMNG_GOAL_POS: Tuple[float, float, float] = (-90.316, -92.625, 100.317)
+BEAMNG_GOAL_POS: Tuple[float, float, float] = (-150, -50, 100.330)
 BEAMNG_GOAL_ROT: Tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.0)
 
 # 2D planning / MPC frame (XY slices — controllers and RRT use these only)
@@ -72,7 +72,8 @@ BEAMNG_CONTROL_HIGH = np.array([1.0, 1.0])
 
 # RRT / MPC tuning
 BEAMNG_RRT_STEP_SIZE: float = 0.5
-BEAMNG_GOAL_THRESHOLD_M: float = 1.0
-BEAMNG_GOAL_SLOW_RADIUS_M: float = 20.0
-BEAMNG_TARGET_SPEED_MPS: float = 5.0
+BEAMNG_GOAL_THRESHOLD_M: float = 0.5
+BEAMNG_GOAL_SLOW_RADIUS_M: float = 0.5
+BEAMNG_GOAL_FULL_SPEED_RADIUS_M: float = 15.0
+BEAMNG_TARGET_SPEED_MPS: float = 6.0
 BEAMNG_INITIAL_SPEED_MPS: float = 0.1

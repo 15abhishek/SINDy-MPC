@@ -1,6 +1,7 @@
 """Live BeamNG bridge utilities."""
 
 from sindympc.beamng.helpers import (
+    BeamNGActuatorMapper,
     SpeedPID,
     heading_from_quat,
     mpc_control_to_beamng,
@@ -9,6 +10,7 @@ from sindympc.beamng.helpers import (
 )
 
 __all__ = [
+    "BeamNGActuatorMapper",
     "SpeedPID",
     "heading_from_quat",
     "mpc_control_to_beamng",

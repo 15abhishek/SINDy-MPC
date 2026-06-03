@@ -732,9 +732,14 @@ class SQPMPC:
         ) if self.goal_position is not None else np.inf
 
         v_ref = np.empty(self.H + 1, dtype=np.float64)
+        # Far from goal: full cruise reference (avoid low-speed trap from blending v_now).
+        cruise = dist_to_goal > 25.0
         for k in range(self.H + 1):
-            alpha = min(1.0, (k + 1) / max(self.H, 1))
-            v_ref[k] = (1.0 - alpha) * v_now + alpha * self.target_speed
+            if cruise:
+                v_ref[k] = self.target_speed
+            else:
+                alpha = min(1.0, (k + 1) / max(self.H // 2, 1))
+                v_ref[k] = max(v_now, (1.0 - alpha) * v_now + alpha * self.target_speed)
 
         # Blend references toward the goal in the last ~1.5 m of the path
         if self.goal_position is not None:
@@ -749,12 +754,12 @@ class SQPMPC:
                 theta_ref[k] = (1.0 - blend) * theta_ref[k] + blend * goal_theta
                 v_ref[k] = (1.0 - blend) * v_ref[k] + blend * self.target_speed
 
-            # Geographic goal phase: slow down before overshooting
-            if dist_to_goal < 3.0:
-                slow = np.clip(dist_to_goal / 3.0, 0.0, 1.0)
+            # Geographic goal phase: gentle slowdown inside ~4 m of goal.
+            if dist_to_goal < 4.0:
+                slow = np.clip(dist_to_goal / 4.0, 0.45, 1.0)
                 v_ref *= slow
-            if dist_to_goal < 1.2:
-                lock = np.clip((1.2 - dist_to_goal) / 1.2, 0.0, 1.0)
+            if dist_to_goal < 0.9:
+                lock = np.clip((1.0 - dist_to_goal) / 1.0, 0.0, 1.0)
                 x_ref = (1.0 - lock) * x_ref + lock * gx
                 y_ref = (1.0 - lock) * y_ref + lock * gy
                 theta_ref = (1.0 - lock) * theta_ref + lock * goal_theta

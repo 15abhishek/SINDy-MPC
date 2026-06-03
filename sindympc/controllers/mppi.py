@@ -263,15 +263,21 @@ class MPPIController:
                 )
             )
             v_now = float(current_state[3])
-            # Tiered braking (SQP-style); SINDy needs earlier / stronger decel than bicycle.
-            if dist < 8.0 and v_now > 0.5:
-                scale = min(1.0, v_now / max(self.target_speed, 0.5))
+            # Soft approach braking: only when overspeed near goal (avoid crawl + brake chatter).
+            if dist < 4.0 and v_now > self.target_speed * 0.90:
+                overspeed = v_now - self.target_speed * 0.90
+                scale = min(1.0, overspeed / max(self.target_speed, 0.5))
                 u0 = jnp.array(
-                    [min(float(u0[0]), -scale * self.max_acceleration), float(u0[1])]
+                    [
+                        min(float(u0[0]), -scale * self.max_acceleration * 0.35),
+                        float(u0[1]),
+                    ]
                 )
-            if dist < 2.5 and v_now > 0.12:
-                u0 = jnp.array([-self.max_acceleration, 0.0])
-            if dist < 1.0 and v_now > 0.05:
-                u0 = jnp.array([-self.max_acceleration, 0.0])
+            if dist < 1.5 and v_now > 0.30:
+                u0 = jnp.array(
+                    [min(float(u0[0]), -0.45 * self.max_acceleration), float(u0[1])]
+                )
+            if dist < 0.8 and v_now > 0.15:
+                u0 = jnp.array([-0.65 * self.max_acceleration, float(u0[1])])
 
         return u0

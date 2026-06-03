@@ -121,7 +121,7 @@ def waypoints_to_reference(
     target_speed: float,
     goal_position: Optional[Tuple[float, float]],
     last_arc_s: Optional[float],
-    goal_slow_radius: float = 20.0,
+    goal_slow_radius: float = 8.0,
 ) -> Tuple[jnp.ndarray, float]:
     """Build (H+1, 4) reference [x, y, theta, v] and updated arc-length progress."""
     if not rrt_waypoints:
@@ -158,9 +158,13 @@ def waypoints_to_reference(
     )
 
     v_ref = np.empty(horizon + 1, dtype=np.float64)
+    cruise = dist_to_goal > 25.0
     for k in range(horizon + 1):
-        alpha = min(1.0, (k + 1) / max(horizon, 1))
-        v_ref[k] = (1.0 - alpha) * v_now + alpha * target_speed
+        if cruise:
+            v_ref[k] = target_speed
+        else:
+            alpha = min(1.0, (k + 1) / max(horizon // 2, 1))
+            v_ref[k] = max(v_now, (1.0 - alpha) * v_now + alpha * target_speed)
 
     if goal_position is not None:
         s_max = float(arc_length[-1])
@@ -171,9 +175,9 @@ def waypoints_to_reference(
         gx, gy = goal_position
         goal_theta = heading_along_path(s_max, arc_length, waypoints)
 
-        # Slow down geographically (do not shortcut XY — stay on the RRT polyline).
+        # Gentle geographic slowdown only inside slow radius (poster: was too cautious at 20 m).
         if dist_to_goal < goal_slow_radius:
-            slow = np.clip(dist_to_goal / max(goal_slow_radius, 1e-3), 0.0, 1.0)
+            slow = np.clip(dist_to_goal / max(goal_slow_radius, 1e-3), 0.55, 1.0)
             v_ref *= slow
 
         if near_path_end:
@@ -183,13 +187,13 @@ def waypoints_to_reference(
                 x_ref[k] = (1.0 - blend) * x_ref[k] + blend * gx
                 y_ref[k] = (1.0 - blend) * y_ref[k] + blend * gy
                 theta_ref[k] = (1.0 - blend) * theta_ref[k] + blend * goal_theta
-                v_ref[k] = (1.0 - blend) * v_ref[k]  # ramp v_ref → 0 at goal
+                v_ref[k] = (1.0 - blend) * v_ref[k]
 
-            if dist_to_goal < 3.0:
-                slow = np.clip(dist_to_goal / 3.0, 0.0, 1.0)
+            if dist_to_goal < 5.0:
+                slow = np.clip(dist_to_goal / 5.0, 0.25, 1.0)
                 v_ref *= slow
-            if dist_to_goal < 1.2:
-                lock = np.clip((1.2 - dist_to_goal) / 1.2, 0.0, 1.0)
+            if dist_to_goal < 1.0:
+                lock = np.clip((1.0 - dist_to_goal) / 1.0, 0.0, 1.0)
                 x_ref = (1.0 - lock) * x_ref + lock * gx
                 y_ref = (1.0 - lock) * y_ref + lock * gy
                 theta_ref = (1.0 - lock) * theta_ref + lock * goal_theta

@@ -8,6 +8,23 @@ from typing import List, Tuple
 Waypoint = Tuple[float, float]
 
 
+def chaikin_smooth(path: List[Waypoint], iterations: int = 2) -> List[Waypoint]:
+    """Chaikin corner-cutting smooth; keeps endpoints fixed."""
+    if len(path) < 3 or iterations <= 0:
+        return list(path)
+    out = list(path)
+    for _ in range(iterations):
+        smoothed: List[Waypoint] = [out[0]]
+        for i in range(len(out) - 1):
+            x0, y0 = out[i]
+            x1, y1 = out[i + 1]
+            smoothed.append((0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1))
+            smoothed.append((0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1))
+        smoothed.append(out[-1])
+        out = smoothed
+    return out
+
+
 def smooth_path_moving_average(
     path: List[Waypoint],
     passes: int = 2,

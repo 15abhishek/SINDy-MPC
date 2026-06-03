@@ -43,13 +43,8 @@ from sindympc.config.beamng_defaults import (
 from sindympc.controllers.sqp_mpc import CONTROL_DIM, STATE_DIM, SQPMPC
 from sindympc.dynamics import DynamicsName, get_dynamics
 from sindympc.planners.rrt import RRT
-from sindympc.utils.obstacles import (
-    DEFAULT_MIN_DIST_FROM_POINTS,
-    DEFAULT_NUM_OBSTACLES,
-    DEFAULT_RADIUS_RANGE,
-    sample_random_obstacles,
-)
-from sindympc.utils.path_utils import densify_polyline, smooth_path_moving_average
+from sindympc.utils.obstacles import get_scenario_obstacles
+from sindympc.utils.path_utils import chaikin_smooth, densify_polyline, smooth_path_moving_average
 from sindympc.utils.plot_utils import apply_scenario_axes
 from sindympc.utils.sim_animation import (
     TRAIL_COLOR,
@@ -102,16 +97,7 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
 
 SIM_SEED: int = int(os.environ.get("SINDYMPC_SEED", "42"))
 
-OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
-    DEFAULT_NUM_OBSTACLES,
-    BEAMNG_SCENARIO_X_BOUNDS,
-    BEAMNG_SCENARIO_Y_BOUNDS,
-    DEFAULT_RADIUS_RANGE,
-    RRT_START,
-    RRT_GOAL,
-    min_dist_from_points=DEFAULT_MIN_DIST_FROM_POINTS,
-    seed=SIM_SEED,
-)
+OBSTACLE_LIST: List[Tuple[float, float, float]] = get_scenario_obstacles()
 
 # RRT planner parameters (scaled for ~100+ m routes)
 RRT_STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
@@ -126,7 +112,7 @@ _MAX_ROUTE_M = float(
         BEAMNG_GOAL_XY[1] - BEAMNG_START_XY[1],
     )
 )
-MAX_SIM_STEPS: int = int(np.ceil(_MAX_ROUTE_M / (BEAMNG_TARGET_SPEED_MPS * DT))) + 150
+MAX_SIM_STEPS: int = int(np.ceil(_MAX_ROUTE_M / (BEAMNG_TARGET_SPEED_MPS * DT))) + 700
 
 GOAL_THRESHOLD: float = BEAMNG_GOAL_THRESHOLD_M
 

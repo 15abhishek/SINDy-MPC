@@ -40,12 +40,7 @@ from sindympc.controllers.mppi import MPPIController
 from sindympc.controllers.path_reference import path_tracking_stats
 from sindympc.dynamics import DynamicsName, get_dynamics
 from sindympc.planners.rrt import RRT
-from sindympc.utils.obstacles import (
-    DEFAULT_MIN_DIST_FROM_POINTS,
-    DEFAULT_NUM_OBSTACLES,
-    DEFAULT_RADIUS_RANGE,
-    sample_random_obstacles,
-)
+from sindympc.utils.obstacles import get_scenario_obstacles
 from sindympc.utils.path_utils import densify_polyline, smooth_path_moving_average
 from sindympc.utils.plot_utils import apply_scenario_axes
 from sindympc.utils.sim_animation import (
@@ -94,16 +89,7 @@ RRT_BOUNDS: Tuple[Tuple[float, float], Tuple[float, float]] = (
 
 SIM_SEED: int = int(os.environ.get("SINDYMPC_SEED", "42"))
 
-OBSTACLE_LIST: List[Tuple[float, float, float]] = sample_random_obstacles(
-    DEFAULT_NUM_OBSTACLES,
-    BEAMNG_SCENARIO_X_BOUNDS,
-    BEAMNG_SCENARIO_Y_BOUNDS,
-    DEFAULT_RADIUS_RANGE,
-    RRT_START,
-    RRT_GOAL,
-    min_dist_from_points=DEFAULT_MIN_DIST_FROM_POINTS,
-    seed=SIM_SEED,
-)
+OBSTACLE_LIST: List[Tuple[float, float, float]] = get_scenario_obstacles()
 
 RRT_STEP_SIZE: float = BEAMNG_RRT_STEP_SIZE
 RRT_MAX_ITER: int = 10000
