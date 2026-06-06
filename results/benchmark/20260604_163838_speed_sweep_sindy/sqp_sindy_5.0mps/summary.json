@@ -1,0 +1,19 @@
+{
+  "controller": "sqp",
+  "dynamics": "sindy",
+  "target_speed_mps": 5.0,
+  "exit_code": 0,
+  "route_length_m": 158.51794847529294,
+  "log_path": "results/benchmark/20260604_163838_speed_sweep_sindy/sqp_sindy_5.0mps/beamng_live.jsonl",
+  "mean_speed_mps": 3.6870716946486968,
+  "final_goal_error_m": 0.477684614017592,
+  "success": true,
+  "ticks": 445,
+  "duration_s": 44.5,
+  "mean_cross_track_error_m": 0.9449411804930976,
+  "max_cross_track_error_m": 3.426839267545326,
+  "mean_solve_time_s": NaN,
+  "mean_throttle": 0.12183899942451823,
+  "mean_brake": 0.020451700364819154,
+  "mean_mpc_accel": -0.01386946865537742
+}

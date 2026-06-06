@@ -1,0 +1,19 @@
+{
+  "controller": "mppi",
+  "dynamics": "sindy",
+  "target_speed_mps": 9.0,
+  "exit_code": 0,
+  "route_length_m": 158.51794847529294,
+  "log_path": "results/benchmark/20260605_135052_speed_sweep_sindy/mppi_sindy_9.0mps/beamng_live.jsonl",
+  "mean_speed_mps": 5.860415652060545,
+  "final_goal_error_m": 0.9878089256293896,
+  "success": true,
+  "ticks": 262,
+  "duration_s": 26.200000000000003,
+  "mean_cross_track_error_m": 1.048918983723337,
+  "max_cross_track_error_m": 3.8653101509670087,
+  "mean_solve_time_s": NaN,
+  "mean_throttle": 0.1743152081405146,
+  "mean_brake": 0.053297139269232796,
+  "mean_mpc_accel": 0.12273609010748857
+}

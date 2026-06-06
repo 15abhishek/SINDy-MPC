@@ -1,0 +1,18 @@
+{
+  "controller": "sqp",
+  "dynamics": "bicycle",
+  "target_speed_mps": 3.5,
+  "exit_code": 0,
+  "route_length_m": 150.0,
+  "mean_speed_mps": 3.02504559047451,
+  "final_goal_error_m": 0.4788663912439137,
+  "success": true,
+  "ticks": 517,
+  "duration_s": 51.7,
+  "mean_cross_track_error_m": 3.4412824075104855,
+  "max_cross_track_error_m": 8.6301007240545,
+  "mean_solve_time_s": NaN,
+  "mean_throttle": 0.14958430786240015,
+  "mean_brake": 0.0705022410506513,
+  "mean_mpc_accel": 0.12667555584999188
+}

@@ -13,7 +13,7 @@ python scripts/07_run_beamng_sim.py
 # MPPI + kinematic bicycle model
 python scripts/07_run_beamng_sim.py --controller mppi --dynamics bicycle
 
-# Attach to running BeamNG, save plot without displaying
+# Attach to BeamNG you started manually (must use -tcom -tport 25252):
 python scripts/07_run_beamng_sim.py --controller mpc --dynamics sindy --no-launch --show-plot
 """
 
@@ -39,8 +39,10 @@ from types import ModuleType
 
 from sindympc.beamng.helpers import (
     BeamNGActuatorMapper,
+    open_beamng,
     poll_vehicle_state_4d,
     quat_from_heading,
+    release_beamng,
 )
 from sindympc.config.scenario_obstacles import BEAMNG_OBSTACLE_GROUND_Z
 from sindympc.config.beamng_defaults import (
@@ -161,7 +163,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-launch",
         action="store_true",
-        help="Connect to an already running BeamNG instance (launch=False)",
+        help=(
+            "Attach to BeamNG.tech already listening on --host/--port "
+            "(does not launch; leaves the simulator running on exit)"
+        ),
     )
     parser.add_argument("--map", default=os.environ.get("SINDYMPC_BNG_MAP", DEFAULT_MAP))
     parser.add_argument("--vehicle-model", default=DEFAULT_VEHICLE_MODEL)
@@ -245,6 +250,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Display the plot interactively (always saved unless --no-plot)",
     )
+    parser.add_argument(
+        "--rrt-path",
+        type=Path,
+        default=None,
+        help="JSON file of [[x,y], ...] waypoints — skip RRT replanning (benchmark fair compare)",
+    )
+    parser.add_argument(
+        "--save-rrt-path",
+        type=Path,
+        default=None,
+        help="Write the planned reference path to JSON after RRT + smoothing",
+    )
     return parser.parse_args()
 
 
@@ -272,6 +289,64 @@ def run_rrt_planner() -> Optional[List[Tuple[float, float]]]:
         seed=SIM_SEED,
     )
     return planner.plan()
+
+
+def load_rrt_path(path: Path) -> List[Tuple[float, float]]:
+    """Load a fixed reference path from JSON ``[[x, y], ...]``."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [(float(p[0]), float(p[1])) for p in data]
+
+
+def save_rrt_path(waypoints: List[Tuple[float, float]], path: Path) -> None:
+    """Save reference waypoints for reuse across benchmark cells."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([[float(x), float(y)] for x, y in waypoints], indent=2),
+        encoding="utf-8",
+    )
+
+
+def prepare_reference_path() -> List[Tuple[float, float]]:
+    """RRT plan plus smoothing/densification (shared by live runs and benchmarks)."""
+    print(f"[Plan] RRT start={RRT_START}, goal={RRT_GOAL}, obstacles={len(OBSTACLE_LIST)}")
+    rrt_path = run_rrt_planner()
+    if rrt_path is None:
+        raise RuntimeError("RRT failed to find a path")
+    print(f"[Plan] RRT path: {len(rrt_path)} waypoints")
+    rrt_path = densify_polyline(
+        smooth_path_moving_average(
+            chaikin_smooth(
+                smooth_path_moving_average(rrt_path, passes=PATH_SMOOTH_PASSES),
+                iterations=PATH_CHAIKIN_ITERS,
+            ),
+            passes=1,
+        ),
+        spacing_m=PATH_SPACING_M,
+    )
+    print(
+        f"[Plan] Reference path: {len(rrt_path)} waypoints "
+        f"(~{PATH_SPACING_M} m spacing)"
+    )
+    return rrt_path
+
+
+def resolve_reference_path(args: argparse.Namespace) -> List[Tuple[float, float]]:
+    """Load ``--rrt-path`` or plan a new reference trajectory."""
+    if args.rrt_path is not None:
+        if not args.rrt_path.is_file():
+            print(f"[Plan] RRT path file not found: {args.rrt_path}")
+            sys.exit(1)
+        rrt_path = load_rrt_path(args.rrt_path)
+        print(
+            f"[Plan] Loaded fixed reference path: {len(rrt_path)} waypoints "
+            f"from {args.rrt_path}"
+        )
+        return rrt_path
+    rrt_path = prepare_reference_path()
+    if args.save_rrt_path is not None:
+        save_rrt_path(rrt_path, args.save_rrt_path)
+        print(f"[Plan] Saved reference path to {args.save_rrt_path}")
+    return rrt_path
 
 
 def build_sqp_controller(
@@ -338,10 +413,11 @@ def build_mppi_controller(
         "yes",
     )
     target = target_speed
+    # BeamNG SINDy MPPI: match SQP velocity tracking (was Q_v=4 → chronic under-speed).
     return MPPIController(
-        Q=jnp.diag(jnp.array([15.0, 15.0, 3.0, 4.0 if use_sindy else 0.1])),
-        R=jnp.diag(jnp.array([0.04 if use_sindy else 0.03, 0.18 if use_sindy else 0.005])),
-        QN=jnp.diag(jnp.array([80.0, 80.0, 8.0, 6.0 if use_sindy else 1.0])),
+        Q=jnp.diag(jnp.array([15.0, 15.0, 3.0, 12.0 if use_sindy else 0.1])),
+        R=jnp.diag(jnp.array([0.03, 0.18 if use_sindy else 0.005])),
+        QN=jnp.diag(jnp.array([80.0, 80.0, 8.0, 10.0 if use_sindy else 1.0])),
         H=int(os.environ.get("SINDYMPC_MPPI_HORIZON", str(MPC_HORIZON))),
         dt=DT,
         max_acceleration=MAX_ACCELERATION,
@@ -643,8 +719,10 @@ def main() -> None:
     dynamics = get_dynamics(dynamics_name)
     if use_sindy:
         from sindympc.dynamics.sindy_model import (
+            kinematic_accel_coefficient,
             kinematic_steer_coefficient,
             theta_steering_gain,
+            v_accel_gain,
         )
 
         steer_c = kinematic_steer_coefficient()
@@ -654,6 +732,13 @@ def main() -> None:
                 f"[SINDy] weak θ̇ on v·tan(δ)/L (learned {steer_c:+.4f}, nominal +1.0); "
                 f"MPC rollout gain={gain:.2f} (set SINDYMPC_SINDY_THETA_GAIN=1 to disable)"
             )
+        accel_c = kinematic_accel_coefficient()
+        v_gain = v_accel_gain()
+        if accel_c is not None and 0.05 < abs(accel_c) < 0.95:
+            print(
+                f"[SINDy] weak v̇ on a (learned {accel_c:+.4f}, nominal +1.0); "
+                f"MPC rollout gain={v_gain:.2f} (set SINDYMPC_SINDY_V_ACCEL_GAIN=1 to disable)"
+            )
 
     target_speed = resolve_target_speed(
         args, controller_key=controller_key, use_sindy=use_sindy,
@@ -662,24 +747,11 @@ def main() -> None:
     if args.max_steps is None:
         args.max_steps = compute_max_steps(_MAX_ROUTE_M, target_speed, DT)
 
-    print(f"[Plan] RRT start={RRT_START}, goal={RRT_GOAL}, obstacles={len(OBSTACLE_LIST)}")
-    rrt_path = run_rrt_planner()
-    if rrt_path is None:
+    try:
+        rrt_path = resolve_reference_path(args)
+    except RuntimeError:
         print("RRT failed to find a path. Exiting.")
         sys.exit(1)
-
-    print(f"[Plan] RRT path: {len(rrt_path)} waypoints")
-    rrt_path = densify_polyline(
-        smooth_path_moving_average(
-            chaikin_smooth(
-                smooth_path_moving_average(rrt_path, passes=PATH_SMOOTH_PASSES),
-                iterations=PATH_CHAIKIN_ITERS,
-            ),
-            passes=1,
-        ),
-        spacing_m=PATH_SPACING_M,
-    )
-    print(f"[Plan] Reference path: {len(rrt_path)} waypoints (~{PATH_SPACING_M} m spacing)")
 
     controller = build_controller(
         controller_key,
@@ -700,13 +772,20 @@ def main() -> None:
         spawn_heading = args.spawn_heading
     print(f"[Sim] Spawn heading={spawn_heading:.2f} rad ({np.degrees(spawn_heading):.0f}°)")
 
-    print(f"[Init] Connecting to BeamNG at {args.host}:{args.port}")
-    bng = BeamNGpy(args.host, args.port, home=args.bng_home, headless=args.headless)
+    mode = "attach" if args.no_launch else "launch"
+    print(f"[Init] Connecting to BeamNG at {args.host}:{args.port} ({mode})")
+    bng = BeamNGpy(
+        args.host,
+        args.port,
+        home=args.bng_home,
+        headless=args.headless,
+        quit_on_close=not args.no_launch,
+    )
     scenario, vehicle = build_beamng_scenario(bng, args, spawn_rot)
 
     executed_trajectory = np.empty((0, 4))
     solve_times: list[float] = []
-    bng.open(launch=not args.no_launch)
+    open_beamng(bng, launch=not args.no_launch)
     try:
         scenario.make(bng)
         bng.settings.set_deterministic(SIM_HZ)
@@ -743,11 +822,7 @@ def main() -> None:
             bng, vehicle, controller, rrt_path, args,
         )
     finally:
-        try:
-            bng.ui.show_hud()
-        except Exception:
-            pass
-        bng.close()
+        release_beamng(bng, keep_alive=args.no_launch)
 
     summary = summarize_run(
         args.log_path,

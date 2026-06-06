@@ -7,6 +7,7 @@ manual blockers; RRT collision checks and BeamNG procedural cylinders use this l
 
 from __future__ import annotations
 
+import math
 from typing import List, Tuple
 
 ObstacleDisk = Tuple[float, float, float]
@@ -24,6 +25,56 @@ SCENARIO_OBSTACLES: List[ObstacleDisk] = [
     (-147.0, -47.0, 1.0),       # Goal Bars
     (-153.0, -47.0, 1.0),       # Goal Bars
 ]
+
+
+# SCENARIO_OBSTACLES = [(-160.0, -110.0, 2.0)]
+
+# corridor_width = 15.0
+# half_width = corridor_width / 2.0
+
+# # Start behind spawn and continue beyond goal
+# y_start = -215
+# y_end = -35
+# step = 2.0
+
+# for i in range(int((y_end - y_start) / step) + 1):
+#     y = y_start + i * step
+
+#     # Centerline
+#     center_x = -150 + 20 * math.sin(
+#         2 * math.pi * (y + 200) / 150
+#     )
+
+#     # Derivative dx/dy
+#     dx_dy = (
+#         20
+#         * (2 * math.pi / 150)
+#         * math.cos(
+#             2 * math.pi * (y + 200) / 150
+#         )
+#     )
+
+#     # Unit normal
+#     nx = 1.0
+#     ny = -dx_dy
+
+#     norm = math.hypot(nx, ny)
+#     nx /= norm
+#     ny /= norm
+
+#     # Boundary obstacles
+#     left_x = center_x + half_width * nx
+#     left_y = y + half_width * ny
+
+#     right_x = center_x - half_width * nx
+#     right_y = y - half_width * ny
+
+#     SCENARIO_OBSTACLES.append(
+#         (left_x, left_y, 1.0)
+#     )
+#     SCENARIO_OBSTACLES.append(
+#         (right_x, right_y, 1.0)
+#     )
 
 # Nominal terrain Z on gridmap_v2 along the start→goal leg (from live telemetry).
 BEAMNG_OBSTACLE_GROUND_Z: float = 100.0

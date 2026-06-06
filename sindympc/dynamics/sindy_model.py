@@ -36,6 +36,7 @@ _n_residual_trig_features: int = 0
 _wheel_base: float = 2.5
 _uses_acceleration_control: bool = False
 _theta_steering_gain: float = 1.0
+_v_accel_gain: float = 1.0
 
 DEFAULT_MODEL_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "sindy_model.npz"
@@ -133,11 +134,17 @@ def _load_npz(path: Path) -> None:
 
     _model_path = path
     _configure_theta_steering_gain()
+    _configure_v_accel_gain()
 
 
 def _kinematic_steer_feature_index() -> int:
     """Column index of ``v·tan(δ)/L`` in the feature vector (kinematic-A layout)."""
     return _n_poly_features + 2
+
+
+def _kinematic_accel_feature_index() -> int:
+    """Column index of ``a`` in the feature vector (kinematic-A layout)."""
+    return _n_poly_features + 3
 
 
 def _configure_theta_steering_gain() -> None:
@@ -161,9 +168,42 @@ def _configure_theta_steering_gain() -> None:
         _theta_steering_gain = float(np.clip(1.0 / coeff, -15.0, 15.0))
 
 
+def _configure_v_accel_gain() -> None:
+    """Optional scale on the learned ``a`` term in v̇ (MPC rollouts only).
+
+    When SINDy learns v̇ ≈ 0.75·a instead of a, controllers settle below v_ref unless
+    the rollout model is rescaled toward the nominal bicycle gain (+1 on ``a``).
+    """
+    global _v_accel_gain
+    env_gain = os.environ.get("SINDYMPC_SINDY_V_ACCEL_GAIN")
+    if env_gain is not None:
+        _v_accel_gain = float(np.clip(float(env_gain), -20.0, 20.0))
+        return
+    _v_accel_gain = 1.0
+    if os.environ.get("SINDYMPC_SINDY_AUTO_V_ACCEL_GAIN", "1").strip() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return
+    if _model_version != MODEL_VERSION_KINEMATIC_A or _coefficients is None:
+        return
+    idx = _kinematic_accel_feature_index()
+    if idx >= _coefficients.shape[1]:
+        return
+    coeff = float(_coefficients[IDX_V, idx])
+    if 0.05 < abs(coeff) < 0.95:
+        _v_accel_gain = float(np.clip(1.0 / coeff, -15.0, 15.0))
+
+
 def theta_steering_gain() -> float:
     """Multiplier applied to the ``v·tan(δ)/L`` contribution in θ̇."""
     return _theta_steering_gain
+
+
+def v_accel_gain() -> float:
+    """Multiplier applied to the ``a`` contribution in v̇."""
+    return _v_accel_gain
 
 
 def kinematic_steer_coefficient() -> Optional[float]:
@@ -174,6 +214,16 @@ def kinematic_steer_coefficient() -> Optional[float]:
     if idx >= _coefficients.shape[1]:
         return None
     return float(_coefficients[IDX_THETA, idx])
+
+
+def kinematic_accel_coefficient() -> Optional[float]:
+    """Learned coefficient on ``a`` in the v̇ row (None if not applicable)."""
+    if _coefficients is None or _model_version != MODEL_VERSION_KINEMATIC_A:
+        return None
+    idx = _kinematic_accel_feature_index()
+    if idx >= _coefficients.shape[1]:
+        return None
+    return float(_coefficients[IDX_V, idx])
 
 
 def load_model(path: Path | str | None = None) -> Path:
@@ -382,12 +432,18 @@ def continuous_dynamics(
     coefficients, _, _, version = _require_artifacts()
     features = _feature_vector(state, control, clip_state=clip_state)
     xdot = coefficients @ features
-    gain = _theta_steering_gain
-    if gain != 1.0 and version == MODEL_VERSION_KINEMATIC_A:
+    steer_gain = _theta_steering_gain
+    if steer_gain != 1.0 and version == MODEL_VERSION_KINEMATIC_A:
         idx = _kinematic_steer_feature_index()
         if idx < features.shape[0]:
-            extra = (gain - 1.0) * coefficients[IDX_THETA, idx] * features[idx]
+            extra = (steer_gain - 1.0) * coefficients[IDX_THETA, idx] * features[idx]
             xdot = xdot.at[IDX_THETA].add(extra)
+    accel_gain = _v_accel_gain
+    if accel_gain != 1.0 and version == MODEL_VERSION_KINEMATIC_A:
+        idx = _kinematic_accel_feature_index()
+        if idx < features.shape[0]:
+            extra = (accel_gain - 1.0) * coefficients[IDX_V, idx] * features[idx]
+            xdot = xdot.at[IDX_V].add(extra)
     return xdot
 
 

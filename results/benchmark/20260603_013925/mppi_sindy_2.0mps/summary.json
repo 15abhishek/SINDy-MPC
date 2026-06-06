@@ -1,0 +1,18 @@
+{
+  "controller": "mppi",
+  "dynamics": "sindy",
+  "target_speed_mps": 2.0,
+  "exit_code": 0,
+  "route_length_m": 150.0,
+  "mean_speed_mps": 1.34640159244616,
+  "final_goal_error_m": 5.231654203781559,
+  "success": false,
+  "ticks": 1147,
+  "duration_s": 114.7,
+  "mean_cross_track_error_m": 3.446735115323151,
+  "max_cross_track_error_m": 8.82995932927588,
+  "mean_solve_time_s": NaN,
+  "mean_throttle": 0.24034893497664173,
+  "mean_brake": 0.0435807040085104,
+  "mean_mpc_accel": 0.18963438087683843
+}

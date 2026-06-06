@@ -1,0 +1,18 @@
+{
+  "controller": "sqp",
+  "dynamics": "sindy",
+  "target_speed_mps": 2.0,
+  "exit_code": 0,
+  "route_length_m": 150.0,
+  "mean_speed_mps": 1.8591767773533296,
+  "final_goal_error_m": 0.4880350431274559,
+  "success": true,
+  "ticks": 877,
+  "duration_s": 87.7,
+  "mean_cross_track_error_m": 3.7541291196012834,
+  "max_cross_track_error_m": 11.803418691939441,
+  "mean_solve_time_s": NaN,
+  "mean_throttle": 0.08754937362529892,
+  "mean_brake": 0.017989420413264564,
+  "mean_mpc_accel": 0.0022868344165264142
+}

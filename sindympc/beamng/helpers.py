@@ -465,3 +465,46 @@ def mpc_control_to_beamng(
         speed_pid=speed_pid,
     )
     return m.map_control(control, state, vel)
+
+
+def open_beamng(bng, *, launch: bool, connect_retries: int = 30) -> None:
+    """Connect to BeamNG.tech, optionally launching a new process.
+
+    With ``launch=False`` (attach / ``--no-launch``), retries the socket
+    connection because a manually started simulator can take several seconds
+    to open its tech port.
+    """
+    from beamngpy.connection import Connection
+
+    if launch:
+        bng.open(launch=True)
+        return
+
+    bng.connection = Connection(bng.host, bng.port)
+    connected = bng.connection.connect_to_beamng(
+        tries=connect_retries,
+        log_tries=True,
+    )
+    if not connected:
+        cmd = bng.get_launch_arguments()
+        raise SystemExit(
+            f"[Error] Could not connect to BeamNG at {bng.host}:{bng.port} "
+            "(attach / --no-launch mode).\n\n"
+            "Start BeamNG.tech with the tech interface enabled, e.g.:\n\n"
+            f"  {cmd}\n\n"
+            "Or omit --no-launch to let the script launch BeamNG."
+        )
+    bng.logger.info("BeamNGpy connected to existing BeamNG instance.")
+    bng._load_system_info()
+
+
+def release_beamng(bng, *, keep_alive: bool) -> None:
+    """Disconnect without quitting BeamNG when ``keep_alive`` is True."""
+    try:
+        bng.ui.show_hud()
+    except Exception:
+        pass
+    if keep_alive:
+        bng.disconnect()
+    else:
+        bng.close()

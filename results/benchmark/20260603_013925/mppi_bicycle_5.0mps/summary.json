@@ -1,0 +1,18 @@
+{
+  "controller": "mppi",
+  "dynamics": "bicycle",
+  "target_speed_mps": 5.0,
+  "exit_code": 0,
+  "route_length_m": 150.0,
+  "mean_speed_mps": 4.109588388551306,
+  "final_goal_error_m": 0.49047088625078894,
+  "success": true,
+  "ticks": 390,
+  "duration_s": 39.0,
+  "mean_cross_track_error_m": 3.446763987710638,
+  "max_cross_track_error_m": 10.45956910517998,
+  "mean_solve_time_s": NaN,
+  "mean_throttle": 0.16824808571012237,
+  "mean_brake": 0.05088851517019133,
+  "mean_mpc_accel": 0.1694258443067949
+}
