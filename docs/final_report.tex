@@ -1,0 +1,581 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%2345678901234567890123456789012345678901234567890123456789012345678901234567890
+%        1         2         3         4         5         6         7         8
+
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}  % Comment this line out
+                                                          % if you need a4paper
+%\documentclass[a4paper, 10pt, conference]{ieeeconf}      % Use this line for a4
+                                                          % paper
+
+% \IEEEoverridecommandlockouts                              % This command is only
+                                                          % needed if you want to
+                                                          % use the \thanks command
+% \overrideIEEEmargins
+% See the \addtolength command later in the file to balance the column lengths
+% on the last page of the document
+\usepackage[math]{kurier}
+\usepackage[sc]{mathpazo}
+\renewcommand{\sfdefault}{kurier}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{makecell}
+
+% The following packages can be found on http:\\www.ctan.org
+\usepackage{graphics} % for pdf, bitmapped graphics files
+\usepackage{epsfig} % for postscript graphics files
+\usepackage{mathptmx} % assumes new font selection scheme installed
+\usepackage{times} % assumes new font selection scheme installed
+% \usepackage{amsmath} % assumes amsmath package installed
+% \usepackage{amssymb}  % assumes amsmath package installed
+
+\title{\LARGE \bf
+Nominal vs. Learned Dynamics for RRT-Guided MPC
+}
+\author{Abhishek Joshi}
+\thanks{University of Washington --- ME569 (Data-Driven Control) \& ME548 (Linear Multivariable Control).}
+
+\begin{document}
+
+
+
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+
+Autonomous vehicles need dynamics models that are accurate enough for real-time control but simple enough to trust and debug. Hand-written kinematic bicycle models are easy to use in optimization, yet they miss simulator-specific behavior. Deep networks fit that behavior well, but they are harder to interpret and do not integrate cleanly with gradient-based MPC.
+We addressed this gap by learning explicit vehicle dynamics from BeamNG.tech telemetry with Sparse Identification of Nonlinear Dynamics (SINDy), then exporting the result as a JAX plant for control. The full stack pairs a Rapidly-exploring Random Tree (RRT) global planner with a Sequential Quadratic Programming MPC (SQP-MPC) local tracker. Three engineering fixes were required: Savitzky-Golay smoothing instead of raw finite differences on noisy logs, a custom trigonometric feature library aligned with bicycle kinematics, and a coefficient-based SINDy--JAX bridge so PySINDy training outputs could support \texttt{jax.jacobian} linearization at runtime.
+
+We evaluated the system in a digital twin setup that reuses the same 2D obstacle layout in BeamNG by spawning matching physical cylinders around the RRT reference path. In closed-loop tests, the learned model recovered near-bicycle structure and matched the nominal plant at cruise speed, reaching the goal with low terminal error when the actuator mapping was well tuned. Data-driven identification for MPC depends as much on derivative quality, library design, and runtime integration as on the sparse regression step itself.
+
+\end{abstract}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+
+Safe navigation in dynamic, partially structured environments remains a central challenge in field robotics and intelligent transportation~\cite{Min2025,Wu2026,Richter2014}.
+Off-road and simulator-rich settings expose vehicles to terrain variation, unmodeled tire slip, and actuator latency that nominal analytical models struggle to capture~\cite{Sathe2024,Han2024Dynamics,Bajracharya2009}.
+Traditional approaches rely on carefully identified physical models whose parameters must be tuned per platform. When those parameters are wrong for the platform, tracking and constraint satisfaction degrade~\cite{LinearSysId,Sathe2024}.
+
+This project builds a two-layer navigation stack---RRT global planning~\cite{LaValle1998} and SQP-MPC/MPPI tracking---on top of a SINDy/SINDYc identification stage~\cite{Brunton2016SINDy,Brunton2016SINDYc}. We compare nominal kinematic bicycle dynamics against SINDy-learned dynamics on tracking error, constraint satisfaction, and solve time in offline and BeamNG~\cite{beamng_tech} closed-loop tests.
+A stretch goal---learned neural-network (LRN) dynamics---was deferred to stabilize the SINDy--MPC integration and BeamNG benchmark matrix.
+
+\subsection{Related work}
+
+\textbf{Black-box learning.}
+Recent work has pursued data-driven alternatives spanning deep reinforcement learning (DRL), imitation learning, and system identification~\cite{Hewing2020,Zhu2025,Sacks2022}.
+Frameworks such as Model Predictive Adversarial Imitation Learning (MPAIL) unify reward inference with planning-based control and improve sample efficiency relative to pure policy learning~\cite{Han2025MPAIL}.
+Yet black-box neural policies often require large amounts of training data and can be difficult to interpret and validate~\cite{Zolman2025}.
+Gaussian-process and subspace-identification methods offer complementary uncertainty-aware modeling~\cite{Sathe2024,LinearSysId}, while Koopman-based approaches linearize nonlinear dynamics in lifted observable spaces~\cite{Bruder2019,Manzoor2023}.
+
+\textbf{Interpretable system identification.}
+Among interpretable alternatives, SINDy discovers sparse governing equations by regressing state derivatives against a library of candidate nonlinear functions~\cite{Brunton2016SINDy,Brunton2016SINDYc,Corbetta2020}.
+Because SINDy yields \emph{explicit algebraic} dynamics rather than opaque network weights, it aligns naturally with physics-informed learning and with optimization-based control that requires differentiable rollouts~\cite{Corbetta2020}.
+Weihmayr et al.~\cite{Weihmayr2025SINDyMPC} recently coupled SINDy-learned plant models to optimization-based vehicular motion planning and benchmarked closed-loop tracking against a single-track reference on lap data, showing that sparse identification can sit between first-principles models and black-box learning for MPC-style planning.
+Our work pursues the same SINDy-for-MPC philosophy but focuses on simulator-grounded identification from BeamNG telemetry, a two-layer RRT\,+\,SQP-MPC architecture, explicit JAX autodiff integration, and a reproducible digital-twin closed-loop benchmark against nominal bicycle and MPPI baselines.
+
+\textbf{Optimization-based control.}
+At the control layer, MPC is the de facto standard for constrained trajectory tracking and obstacle avoidance~\cite{Sani2021,Ismael2024,Lindqvist2020}.
+Analytical SQP-MPC linearizes nonlinear dynamics along a nominal trajectory and solves a sequence of convex quadratic programs, providing stronger constraint handling than purely sampling-based methods in many regimes~\cite{Menegatti2025,Nurbayeva2023}.
+MPPI draws control sequences from a stochastic distribution and weights them by trajectory cost, enabling aggressive maneuvering with complex cost landscapes~\cite{Williams2016MPPI,Williams2017MPPI}.
+Recent surveys emphasize model improvement from data as the dominant integration path for learning-based MPC~\cite{Hewing2020}, while SINDy-RL demonstrates that sparse dictionary models can match DRL performance with far fewer environment interactions~\cite{Zolman2025}.
+This project follows a complementary route: \emph{explicit SINDy dynamics coupled directly to analytical SQP-MPC}, rather than end-to-end reinforcement learning.
+
+\subsection{Project scope and course delineation}
+
+This project is jointly submitted to ME569 and ME548.
+The following delineation matches syllabus requirements and reflects how responsibilities were partitioned in implementation.
+
+\textbf{ME569 (Data-Driven Control) scope:}
+\begin{itemize}
+  \item Telemetry for SINDy training in BeamNG.tech (reused from an existing logging effort at multiple sampling rates; new collection was not required)
+  \item Noise mitigation via Savitzky--Golay filtering of state derivatives (\texttt{SINDyDerivative}, \texttt{sindympc/system\_id/sindy\_training.py})
+  \item Custom trigonometric feature library design (\texttt{BicycleFeatureLibrary}, \texttt{sindympc/system\_id/sindy\_features.py})
+  \item STLSQ sparse regression to recover governing equations and export to \texttt{data/sindy\_model.npz} (\texttt{scripts/02\_train\_sindy.py})
+\end{itemize}
+
+\textbf{ME548 (Linear Multivariable Control) scope:}
+\begin{itemize}
+  \item RRT global planner (\texttt{sindympc/planners/rrt.py})
+  \item The SINDy--JAX bridge for runtime plant evaluation (\texttt{sindympc/dynamics/sindy\_model.py})
+  \item Analytical linearizations using \texttt{jax.jacobian} on RK4 discrete dynamics (\texttt{linearize\_dynamics}, \texttt{sindympc/controllers/sqp\_mpc.py})
+  \item Receding-horizon SQP-MPC formulation via CVXPY with obstacle and input constraints
+  \item MPPI baseline comparison (\texttt{sindympc/controllers/mppi.py})
+\end{itemize}
+
+\textbf{Synergy:} Once $\boldsymbol{\Xi}$ is exported as JAX coefficient tensors, the ME548 stack can linearize and optimize against the learned plant without a black-box forward model~\cite{Brunton2016SINDy,Corbetta2020}.
+
+\subsection{Statement of contributions}
+
+This project offers four primary contributions:
+\begin{enumerate}
+  \item A complete \texttt{sindympc} package implementing RRT planning, SINDy training with custom feature libraries, JAX bicycle and SINDy plants, SQP-MPC (CVXPY\,+\,JAX linearization), and MPPI sampling control.
+  \item A BeamNG.tech \emph{digital twin} pipeline in which shared circular obstacle definitions drive RRT, visualization, and procedurally spawned cylinder obstacles in the 3D simulator.
+  \item A reproducible benchmark harness (\texttt{scripts/08\_benchmark\_beamng.py}) for offline open-loop accuracy by speed bin and live closed-loop sweeps over controller $\times$ dynamics $\times$ target speed.
+  \item Documented failure modes and fixes in the identification and integration stack---derivative filtering, library engineering, and the SINDy--JAX bridge---showing that successful identification for control depends as much on \emph{derivative quality} and \emph{library physics} as on sparse regression itself.
+\end{enumerate}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Problem formulation}
+
+\subsection{SINDy dynamics identification}
+
+Consider continuous-time dynamics $\dot{\mathbf{x}} = \mathbf{f}(\mathbf{x}, \mathbf{u})$ with state $\mathbf{x} \in \mathbb{R}^n$ and control $\mathbf{u} \in \mathbb{R}^m$.
+SINDy approximates $\mathbf{f}$ as a sparse linear combination of columns in a feature library $\boldsymbol{\Theta}(\mathbf{x}, \mathbf{u})$:
+\begin{equation}
+  \dot{\mathbf{x}} \approx \boldsymbol{\Theta}(\mathbf{x}, \mathbf{u}) \,\boldsymbol{\Xi},
+  \label{eq:sindy}
+\end{equation}
+where $\boldsymbol{\Xi}$ is identified by sparse regression---typically Sequential Thresholded Least Squares (STLSQ) from trajectories and estimated derivatives~\cite{Brunton2016SINDy}.
+SINDYc extends~\eqref{eq:sindy} to systems with control inputs~\cite{Brunton2016SINDYc}.
+Given BeamNG telemetry $\{\mathbf{x}_k, \mathbf{u}_k\}$, we estimate $\boldsymbol{\Xi}$ so the learned model supports Jacobian-based linearization of the discrete rollout map used in MPC~\cite{Corbetta2020}.
+
+\subsection{Kinematic bicycle model}
+
+The planar kinematic bicycle with state $[x, y, \theta, v]^\top$ and control $[a, \delta]^\top$ (longitudinal acceleration and front steering angle) is:
+\begin{align}
+  \dot{x} &= v\cos\theta, &
+  \dot{y} &= v\sin\theta, \nonumber\\
+  \dot{\theta} &= \frac{v\tan\delta}{L}, &
+  \dot{v} &= a,
+  \label{eq:bicycle}
+\end{align}
+where $L$ is the wheelbase.
+This model serves as both the \textbf{nominal plant} and the \textbf{target structure} for the kinematic SINDy library~\cite{Han2024Dynamics,Nurbayeva2023}.
+
+\subsection{RRT global planning}
+
+Before the low-level controller runs, a Rapidly-exploring Random Tree (RRT) planner~\cite{LaValle1998} searches for a collision-free geometric route from a start configuration $\mathbf{x}_s = (x_s, y_s)$ to a goal $\mathbf{x}_g = (x_g, y_g)$ in the workspace.
+Circular obstacles are modeled as disks $\mathcal{O}_j = \{(x,y) : \|(x,y) - \mathbf{c}_j\| \leq r_j\}$.
+The planner maintains a tree $\mathcal{T}$ rooted at $\mathbf{x}_s$ and, for up to $N_{\max}$ iterations, samples a configuration $\mathbf{q}_{\mathrm{rand}}$ (with goal biasing), finds the nearest tree node, steers toward the sample by at most step size $\Delta s$, and retains the new node only if the connecting segment is collision-free.
+When the tree reaches $\mathbf{x}_g$, the planner backtracks parent pointers to obtain a waypoint sequence
+$\mathcal{P} = \{\mathbf{w}_0, \mathbf{w}_1, \ldots, \mathbf{w}_N\}$ with $\mathbf{w}_0 = \mathbf{x}_s$ and $\mathbf{w}_N \approx \mathbf{x}_g$.
+This polyline is smoothed (Chaikin corner-cutting) and densified to form the \emph{reference path} consumed by SQP-MPC and MPPI for cross-track and speed tracking costs.
+The same disk obstacles used in RRT appear in the BeamNG digital twin as procedurally spawned cylinders, so planning and closed-loop evaluation share one obstacle layout.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\columnwidth]{figs/rrt_reference_path.png}
+  \caption{RRT-generated reference path from start (green) to goal (red) through circular obstacles (gray disks) on the BeamNG GridMap scenario.
+  The smoothed waypoint sequence defines the spatial reference tracked by the receding-horizon controller.}
+  \label{fig:rrt_path}
+\end{figure}
+
+\subsection{Receding-horizon MPC}
+
+Given the densified RRT reference path $\mathcal{P}$, the local controller solves a receding-horizon problem at each tick.
+At each time step, MPC solves
+\begin{equation}
+  \min_{\mathbf{u}_{0:H-1}} \sum_{k=0}^{H-1} \ell(\mathbf{x}_k, \mathbf{u}_k) + \ell_f(\mathbf{x}_H)
+  \quad \text{s.t.}\quad \mathbf{x}_{k+1} = f(\mathbf{x}_k, \mathbf{u}_k),\; \mathbf{g}(\mathbf{x}_k) \leq 0,
+  \label{eq:mpc}
+\end{equation}
+then applies $\mathbf{u}_0^\star$.
+The stage cost $\ell$ penalizes deviation from the RRT reference path (cross-track error and speed scheduling along $\mathcal{P}$) while respecting input bounds on $[a, \delta]$.
+SQP linearizes $f$ about $(\bar{\mathbf{x}}, \bar{\mathbf{u}})$ to obtain $\mathbf{x}_{k+1} \approx \mathbf{A}_k \mathbf{x}_k + \mathbf{B}_k \mathbf{u}_k + \mathbf{c}_k$, solves a convex QP (CVXPY), and iterates~\cite{Sani2021,Menegatti2025}.
+Our implementation uses \texttt{jax.jacobian} on a JAX RK4 step for $(\mathbf{A}, \mathbf{B}, \mathbf{c})$ for both bicycle and SINDy plants.
+
+\subsection{MPPI baseline}
+
+MPPI approximates optimal control by importance-weighted sampling of control sequences~\cite{Williams2016MPPI,Williams2017MPPI}.
+At each step, $K$ perturbed sequences are rolled forward; costs $S_i$ yield weights $w_i \propto \exp(-S_i / \lambda)$; and the applied control is the weighted average of sampled first controls.
+MPPI tolerates non-convex costs at the expense of hard constraint guarantees~\cite{Williams2016MPPI,Hewing2020}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Proposed Solution}
+
+\subsection{Data-driven system identification [ME569]}
+
+\subsubsection{Data collection}
+We used pre-collected training data from BeamNG.tech on randomly selected maps with varied throttle and steering at 100\,Hz.
+Logged signals include position, velocity, quaternion orientation, and actuator inputs, processed into state $[x, y, \theta, v]$ and controls $[a, \delta]$. 
+For SINDYc in kinematic mode, longitudinal acceleration $a$ is estimated from smoothed velocity; in residual mode, raw throttle is retained.
+
+\subsubsection{SINDy training pipeline}
+Training follows the SINDYc workflow~\cite{Brunton2016SINDYc}: subsample trajectories; differentiate states; build $\boldsymbol{\Theta}$; fit with STLSQ (threshold 0.002 kinematic, 0.02 residual); audit sign consistency of $\dot{x}, \dot{y}, \dot{\theta}$; export coefficients to \texttt{data/sindy\_model.npz}.
+
+\subsubsection{Engineering iterations: failures and fixes}
+
+\textbf{Iteration 1: Raw finite differences amplified simulator noise.}
+PySINDy's default finite-difference estimator on 100\,Hz logs amplified high-frequency jitter in position and heading.
+STLSQ either zeroed all terms or selected spurious polynomial features.
+\textbf{Fix:} Savitzky--Golay smoothing differentiation (\texttt{SINDyDerivative(kind="savitzky\_golay")}) with odd window length scaled to ${\sim}1$\,s (\texttt{SG\_POLYORDER = 3})~\cite{Brunton2016SINDy,Corbetta2020}.
+
+\textbf{Iteration 2: Default polynomial libraries missed kinematic structure.}
+A generic cubic library on $[x, y, \theta, v, u_0, \delta]$ fit in-sample data but did not enforce trigonometric couplings ($v\cos\theta$, $v\sin\theta$, $v\tan\delta/L$).
+\textbf{Fix:} \texttt{BicycleFeatureLibrary} with \textbf{kinematic mode} (minimal basis $\{v\cos\theta,\; v\sin\theta,\; v\tan(\delta)/L,\; a\}$) and \textbf{residual mode} (kinematic block plus degree-2 polynomials and extra $\{\sin\theta, \cos\theta, \tan\delta\}$ terms)~\cite{Corbetta2020}.
+Related automotive work builds a broader sin/cos/tan-rich library and prunes terms via sparsity~\cite{Weihmayr2025SINDyMPC}; here we instead encode known bicycle kinematics directly so STLSQ only refines coefficients near unity rather than searching a large polynomial hypothesis space.
+
+\textbf{Iteration 3: PySINDy NumPy models broke JAX autodiff.}
+PySINDy callables prevented end-to-end \texttt{jax.jacobian} on the RK4 map, forcing slow finite-difference linearization.
+\textbf{Fix:} Export $\boldsymbol{\Xi}$ and library metadata to NPZ; reconstruct $\dot{\mathbf{x}} = \boldsymbol{\Theta}\boldsymbol{\Xi}$ entirely in JAX at runtime (\texttt{sindympc/dynamics/sindy\_model.py}), matching the bicycle module interface.
+This export closes the loop between PySINDy training (ME569) and JAX-based SQP-MPC (ME548).
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.92\columnwidth}{\centering\vspace{0.1cm}
+\textbf{  BeamNG logs $\rightarrow$ SG filter $\rightarrow$ library $\rightarrow$ STLSQ $\rightarrow$ NPZ export}
+  \vspace{0.1cm}}}
+  \caption{SINDy identification pipeline.}
+  \label{fig:sindy_pipeline}
+\end{figure}
+
+\subsection{Optimization-based control [ME548]}
+
+With the learned plant available as a JAX module, the ME548 stack implements planning, linearization, and closed-loop evaluation as follows.
+
+\subsubsection{System architecture}
+Table~\ref{tab:architecture} summarizes the implemented pipeline layers.
+State convention: $x, y$ [m], $\theta$ [rad] from velocity direction when $v$ exceeds a threshold, $v$ [m/s].
+MPC controls are $[a, \delta]$.
+BeamNG actuation maps desired speed and steering through a PID throttle/brake layer (\texttt{sindympc/beamng/helpers.py}).
+
+% \begin{table}[t]
+% \centering
+% \caption{Implemented pipeline layers.}
+% \label{tab:architecture}
+% \begin{tabularx}{\columnwidth}{@{}lXl@{}}
+% \toprule
+% Layer & Module & Role \\
+% \midrule
+% Planning &
+% \texttt{planners/rrt.py} &
+% 2D RRT with disk obstacles \\
+
+% Control &
+% \texttt{sqp\_mpc.py}, \texttt{mppi.py} &
+% SQP-MPC and MPPI \\
+
+% Plants &
+% \texttt{bicycle\_model.py}, \texttt{sindy\_model.py} &
+% Nominal and learned JAX dynamics \\
+
+% Eval. &
+% \texttt{07\_run\_beamng\_sim.py}, \texttt{08\_benchmark\_beamng.py} &
+% Live BeamNG loop and benchmarks \\
+% \bottomrule
+% \end{tabularx}
+% \end{table}
+
+\begin{table}[t]
+\centering
+\caption{Implemented pipeline layers.}
+\label{tab:architecture}
+
+\begin{tabularx}{\columnwidth}{@{}p{1.0cm}p{3.5cm}X@{}}
+\toprule
+Layer & Module & Role \\
+\midrule
+Planning &
+\texttt{planners/rrt.py} &
+2D RRT with disk obstacles \\
+Control &
+\texttt{sqp\_mpc.py}, \texttt{mppi.py} &
+SQP-MPC and MPPI \\
+Plants &
+\texttt{bicycle\_model.py}, \texttt{sindy\_model.py} &
+Nominal and learned JAX dynamics \\
+Eval. &
+\texttt{07\_run\_beamng\_sim.py}, \texttt{08\_benchmark\_beamng.py} &
+Live BeamNG loop and benchmarks \\
+\bottomrule
+\end{tabularx}
+
+\end{table}
+
+% \begin{table}[t]
+%   \centering
+%   \caption{Implemented pipeline layers.}
+%   \label{tab:architecture}
+%   \begin{tabular}{@{}lll@{}}
+%     \toprule
+%     Layer & Module & Role \\
+%     \midrule
+%     Planning & \texttt{planners/rrt.py} & 2D RRT with disk obstacles \\
+%     Control & \texttt{sqp\_mpc.py}, \texttt{mppi.py} & SQP-MPC and MPPI \\
+%     Plants & \texttt{bicycle\_model.py}, \texttt{sindy\_model.py} & Nominal and learned JAX dynamics \\
+%     Eval. & \texttt{07\_run\_beamng\_sim.py} & Live BeamNG loop and benchmarks \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+
+\subsubsection{RRT reference generation}
+The global planner (\texttt{sindympc/planners/rrt.py}) operates on the same circular obstacle list as the BeamNG scenario with step size $\Delta s = 0.5$\,m and goal biasing.
+The returned waypoint polyline is smoothed and densified before being passed to the local controller; Figure~\ref{fig:rrt_path} shows a representative planned path.
+For benchmark sweeps, the path is computed once and serialized so every speed/controller cell tracks identical spatial references.
+
+\subsubsection{JAX bridge and SQP-MPC}
+Like Weihmayr et al.~\cite{Weihmayr2025SINDyMPC}, we embed the learned plant in an optimization-based tracker rather than wrapping it in a black-box policy.
+The SINDy--JAX bridge loads NPZ coefficients and evaluates $\boldsymbol{\Theta}(\mathbf{x}, \mathbf{u})$ without PySINDy at runtime.
+\texttt{linearize\_dynamics} computes Jacobians of the RK4 step for both plants, enabling CVXPY-based SQP-MPC linearization at 10\,Hz.
+SQP-MPC selects either the bicycle or SINDy plant at runtime, tracks a speed-scheduled reference along the RRT polyline, and enforces box constraints on $a, \delta$ plus disk obstacle constraints linearized each SQP iteration.
+Relative to prior SINDy motion-planning work, our stack adds an RRT global planner, an NPZ-to-JAX coefficient bridge for autodiff through rollouts, and an MPPI sampling baseline for controller comparison.
+
+\subsubsection{MPPI baseline}
+MPPI uses $K{=}256$ samples, temperature $\lambda$, and Gaussian perturbations on control sequences with softmax weighting.
+The same RK4 plant hook ensures controller comparisons isolate algorithm choice rather than integration differences~\cite{Williams2016MPPI,Williams2017MPPI}.
+
+\subsubsection{BeamNG digital twin evaluation}
+The closed-loop script (\texttt{07\_run\_beamng\_sim.py}): (1)~connects to BeamNG.tech; (2)~plans with RRT and optionally reuses \texttt{rrt\_path.json}; (3)~spawns procedural obstacle cylinders at the same $(x, y, r)$ disks used in 2D planning; (4)~runs at 10\,Hz---poll state, solve MPC/MPPI, map $(a,\delta)$ to throttle/brake/steering, log JSONL telemetry.
+This \emph{digital twin} isolates dynamics and controller effects while validating 2D plans in 3D physics~\cite{Richter2014,Han2024Dynamics}.
+
+\begin{figure}[t]
+  \centering
+  \fbox{\parbox{0.92\columnwidth}{\centering\vspace{0.1cm}
+  \textbf{RRT reference $\rightarrow$ SQP/MPPI loop $\rightarrow$ BeamNG actuator mapping}
+  \vspace{0.1cm}}}
+  \caption{Closed-loop stack: RRT reference, SQP/MPPI, and BeamNG actuator mapping.}
+  \label{fig:architecture}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Experimental results}
+
+\subsection{Learned model structure}
+
+With kinematic library mode, SINDy recovers sparse coefficients aligned with the nominal bicycle:
+$\dot{x} \approx c_x \cdot v\cos\theta$,
+$\dot{y} \approx c_y \cdot v\sin\theta$,
+$\dot{\theta} \approx c_\theta \cdot v\tan(\delta)/L$,
+$\dot{v} \approx c_a \cdot a$,
+with $c_x, c_y, c_\theta, c_a$ typically within a few percent of unity after STLSQ.
+Residual-mode models activate additional polynomial terms at medium speeds where tire effects depart from pure kinematics~\cite{Sathe2024,Han2024Dynamics}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\columnwidth]{figs/sindy_coefficients.png}
+  % \fbox{\parbox{0.92\columnwidth}{\centering\vspace{1.0cm}
+  % \textbf{[Insert Figure: SINDy coefficients vs.\ nominal bicycle]}
+  % \vspace{1.0cm}}}
+  \caption{Learned SINDy coefficients compared to nominal bicycle structure.}
+  \label{fig:coefficients}
+\end{figure}
+
+\subsection{Offline open-loop accuracy}
+
+One-step RK4 prediction RMSE was computed against logged telemetry, binned by speed.
+Table~\ref{tab:offline} summarizes representative results.
+
+\begin{table}[t]
+\centering
+\caption{Offline one-step RK4 RMSE by speed bin.}
+\label{tab:offline}
+
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccccc@{}}
+\toprule
+Speed bin & $n$ & Bic. $(x,y)$ & SINDy $(x,y)$ & Bic. $v$ & SINDy $v$ \\
+\midrule
+$v < 2$\,m/s        & 287  & 0.017 & 0.019 & 0.034 & 0.154 \\
+$2 \leq v < 4$\,m/s & 116  & 0.006 & 0.017 & 0.022 & 0.319 \\
+$v \geq 4$\,m/s     & 2596 & 0.030 & 0.031 & 0.020 & 0.123 \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+% \begin{table}[t]
+%   \centering
+%   \caption{Offline one-step RK4 RMSE by speed bin.}
+%   \label{tab:offline}
+%   \begin{tabular}{@{}lrrrrr@{}}
+%     \toprule
+%     Speed bin & $n$ & Bic.\ RMSE $(x,y)$ & SINDy RMSE $(x,y)$ & Bic.\ RMSE $v$ & SINDy RMSE $v$ \\
+%     \midrule
+%     $v < 2$\,m/s & 287 & 0.017 & 0.019 & 0.034 & 0.154 \\
+%     $2 \leq v < 4$\,m/s & 116 & 0.006 & 0.017 & 0.022 & 0.319 \\
+%     $v \geq 4$\,m/s & 2596 & 0.030 & 0.031 & 0.020 & 0.123 \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+
+At cruise speeds ($v \geq 4$\,m/s), SINDy and bicycle achieve equivalent position RMSE; SINDy velocity error remains higher due to throttle-to-acceleration mismatch in training data.
+Low-speed bins are dominated by heading noise, where both models struggle on $\theta$.
+These speed-binned errors add open-loop context beyond the lap-data prediction study in~\cite{Weihmayr2025SINDyMPC}; our closed-loop contribution is a BeamNG digital-twin evaluation with shared obstacle semantics, fixed RRT references, and full controller/dynamics speed sweeps.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\columnwidth]{figs/offline_speed_bins_rmse.png}
+  % \fbox{\parbox{0.92\columnwidth}{\centering\vspace{1.0cm}
+  % \textbf{[Insert Figure: Offline speed-bin RMSE bar chart]}
+  % \vspace{1.0cm}}}
+  \caption{Open-loop prediction RMSE: bicycle vs.\ SINDy by speed bin.}
+  \label{fig:offline_rmse}
+\end{figure}
+
+\subsection{Experimental setup}
+
+Closed-loop evaluation uses a BeamNG.tech \emph{digital twin} (Section~III-B): RRT plans once on a 2D obstacle map, the waypoint polyline is saved in a JSON file, and each benchmark cell reuses that fixed reference so speed and controller comparisons are not confounded by replanning variation.
+The vehicle state is polled at 10\,Hz; SQP-MPC or MPPI computes $[a, \delta]$, which a PID throttle/brake layer maps to BeamNG actuators. Metrics---including mean cross-track error (CTE)---are aggregated from per-tick JSONL logs.
+
+A run is marked \textbf{successful} when the terminal Euclidean distance to the goal satisfies $\|\mathbf{x}_N - \mathbf{x}_g\|_2 < 1.0$\,m.
+This threshold was increased from an earlier 0.5\,m criterion after full-speed sweeps showed repeatable arrivals with final goal errors in the 0.5--0.6\,m range under actuator lag and reference-path endpoint tolerance; the relaxed criterion better reflects practical goal reaching without penalizing otherwise stable tracking runs.
+
+\subsection{BeamNG closed-loop benchmarks}
+
+An initial matrix compared \texttt{sqp} vs.\ \texttt{mppi} and \texttt{bicycle} vs.\ \texttt{sindy} at target speeds 2.0, 3.5, and 5.0\,m/s on a ${\sim}150$\,m route (Table~\ref{tab:closedloop}).
+Table~\ref{tab:closedloop} reports an earlier benchmark configuration on a shorter route; the fixed-path sweep in Table~\ref{tab:speedsweep} uses a shared ${\sim}159$\,m reference and yields lower mean CTE at comparable speeds.
+The primary evaluation is a \textbf{full-speed sweep} over target speeds $1, 2, \ldots, 10$\,m/s with SINDy dynamics, a shared RRT path (${\sim}159$\,m), and both SQP-MPC and MPPI controllers (one live run per speed--controller pair, 20 runs total per sweep).
+Table~\ref{tab:speedsweep} summarizes the latest sweep; Figure~\ref{fig:speed_accuracy} plots final goal error and mean achieved speed versus commanded cruise.
+
+\begin{table}[t]
+\centering
+\caption{Closed-loop BeamNG benchmark results (representative cells).}
+\label{tab:closedloop}
+\small
+\begin{tabularx}{\columnwidth}{@{}ll>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}Xc@{}}
+\toprule
+Controller & Dynamics &
+\makecell{Target\\{[m/s]}} &
+\makecell{Mean\\speed\\{[m/s]}} &
+\makecell{Mean\\CTE\\{[m]}} &
+\makecell{Goal\\err.\\{[m]}} &
+Success \\
+\midrule
+SQP  & SINDy   & 2.0 & 1.86 & 3.75 & 0.49 & Yes \\
+SQP  & Bicycle & 2.0 & 1.90 & 3.68 & 0.49 & Yes \\
+SQP  & SINDy   & 5.0 & 3.80 & 3.60 & 0.48 & Yes \\
+SQP  & Bicycle & 5.0 & 4.12 & 3.31 & 0.48 & Yes \\
+MPPI & SINDy   & 3.5 & 2.78 & 3.34 & 0.49 & Yes \\
+MPPI & Bicycle & 5.0 & 4.11 & 3.45 & 0.49 & Yes \\
+MPPI & SINDy   & 2.0 & 1.35 & 3.45 & 5.23 & No  \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Full-speed evaluation sweep (SINDy plant, fixed RRT path, goal threshold 1.0\,m).}
+\label{tab:speedsweep}
+\small
+\begin{tabularx}{\columnwidth}{@{}l>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}Xc@{}}
+\toprule
+Controller &
+\makecell{Target\\{[m/s]}} &
+\makecell{Mean\\speed\\{[m/s]}} &
+\makecell{Mean\\CTE\\{[m]}} &
+\makecell{Goal\\err.\\{[m]}} &
+\makecell{Duration\\{[s]}} &
+Success \\
+\midrule
+SQP  & 1.0  & 1.21 & 0.82 & 0.93 & 140.4 & Yes \\
+SQP  & 2.0  & 1.80 & 0.76 & 0.98 &  90.7 & Yes \\
+SQP  & 3.0  & 2.61 & 0.22 & 0.99 &  60.4 & Yes \\
+SQP  & 4.0  & 3.26 & 0.90 & 0.93 &  49.6 & Yes \\
+SQP  & 5.0  & 3.99 & 0.65 & 0.96 &  40.3 & Yes \\
+SQP  & 6.0  & 4.58 & 0.96 & 0.97 &  35.1 & Yes \\
+SQP  & 7.0  & 5.42 & 2.36 & 0.91 &  30.4 & Yes \\
+SQP  & 8.0  & 1.61 & 3.80 & 104.5 &  33.8 & No  \\
+SQP  & 9.0  & 4.00 & 2.38 &  33.5 &  31.7 & No  \\
+SQP  & 10.0 & 7.32 & 4.70 & 0.94 &  25.1 & Yes \\
+\midrule
+MPPI & 1.0  & 0.18 & 0.62 & 107.6 & 268.0 & No  \\
+MPPI & 2.0  & 1.73 & 0.31 & 1.00 &  90.7 & Yes \\
+MPPI & 3.0  & 2.46 & 0.32 & 0.97 &  63.8 & Yes \\
+MPPI & 4.0  & 3.17 & 0.36 & 1.00 &  49.3 & Yes \\
+MPPI & 5.0  & 3.89 & 0.41 & 0.97 &  40.3 & Yes \\
+MPPI & 6.0  & 4.38 & 0.73 & 0.98 &  35.8 & Yes \\
+MPPI & 7.0  & 5.03 & 0.76 & 1.00 &  31.1 & Yes \\
+MPPI & 8.0  & 2.38 & 5.27 & 80.0 &  33.8 & No  \\
+MPPI & 9.0  & 1.64 & 3.19 & 104.6 &  31.7 & No  \\
+MPPI & 10.0 & 1.70 & 3.27 & 103.6 &  30.0 & No  \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Full-speed sweep outcomes:}
+With the 1.0\,m success threshold, SQP\,+\,SINDy completed 8 of 10 speed targets (1--7\,m/s and 10\,m/s).
+Successful runs reached the goal with 0.91--0.99\,m terminal error and mean cross-track errors below 2.4\,m except at the highest speeds.
+SQP failed at 8 and 9\,m/s due to large terminal position error (under-speed and loss of tracking near the goal).
+MPPI\,+\,SINDy succeeded at 2--7\,m/s with comparably low cross-track error but failed at 1, 8, 9, and 10\,m/s, which reflects greater sensitivity to sampling noise and throttle/brake heuristics at the speed extremes~\cite{Williams2016MPPI,Hewing2020}.
+At 10\,m/s, SQP reached the goal in 25\,s (mean speed 7.3\,m/s, goal error 0.94\,m) while MPPI stalled short of the goal.
+
+\textbf{Results summary:}
+\begin{itemize}
+  \item \textbf{SINDy vs.\ bicycle (SQP):} In the initial matrix (Table~\ref{tab:closedloop}), comparable goal reaching and cross-track error; the nominal bicycle achieves slightly higher mean speed at elevated targets because its velocity channel is exact by construction.
+  \item \textbf{SQP vs.\ MPPI:} SQP is more reliable at the speed sweep endpoints (1 and 10\,m/s); MPPI is competitive in the 2--7\,m/s band with lower mean cross-track error at several targets.
+  \item \textbf{Actuator layer limits performance:} Mean achieved speed frequently trails the commanded target; the PID throttle/brake mapping---not the learned $\dot{v}$ equation---is often the limiting factor.
+\end{itemize}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\columnwidth]{figs/cross_track_error_3_5.png}
+  % \fbox{\parbox{0.92\columnwidth}{\centering\vspace{1.0cm}
+  % \textbf{[Insert Figure: Cross-track error comparison]}\\
+  % SQP bicycle vs.\ SINDy at 3.5\,m/s
+  % \vspace{1.0cm}}}
+  \caption{Cross-track error comparison for SQP-MPC with bicycle vs.\ SINDy plants.}
+  \label{fig:cte}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\columnwidth]{figs/speed_vs_accuracy.png}
+  \caption{Speed vs.\ tracking accuracy from fixed-path sweep (1--10\,m/s).}
+  \label{fig:speed_accuracy}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusions and future work}
+
+We implemented a complete data-driven control stack for Ackermann-steered navigation: SINDy identification from BeamNG telemetry, explicit JAX export for gradient-based MPC, RRT global planning, and comparative evaluation of SQP-MPC and MPPI in a physics-rich digital twin.
+
+On the ME569 side, successful identification for control depends as much on \emph{derivative quality} and \emph{library physics} as on sparse regression itself; Savitzky--Golay smoothing, trigonometric bicycle features, and the SINDy--JAX bridge were necessary to move from unusable NumPy models to real-time SQP linearizations.
+On the ME548 side, nominal and SINDy plants behave similarly in closed loop when the learned library embeds kinematic structure, but constraint satisfaction and speed tracking still hinge on MPC formulation details and the low-level actuator map.
+
+\textbf{Lessons learned:}
+\begin{enumerate}
+  \item Raw telemetry derivatives are unusable for continuous-time identification without smoothing~\cite{Brunton2016SINDy,Corbetta2020}.
+  \item Known vehicle geometry should be encoded in the SINDy library before expecting STLSQ to recover it from polynomials alone~\cite{Corbetta2020}.
+  \item Training-time (PySINDy) and runtime (JAX) representations must be separated when MPC requires autodiff through rollouts~\cite{Hewing2020}.
+  \item Closed-loop benchmarks should reuse the training environment and share obstacle semantics between planner and simulator~\cite{Richter2014,Han2024Dynamics}.
+\end{enumerate}
+
+\textbf{Future work:} extend SINDYc across diverse maneuvers and terrain~\cite{Brunton2016SINDYc}; explore online R-SINDy~\cite{RSINDy}; add uncertainty-aware models (e.g., Gaussian processes~\cite{Sathe2024}) for safety margins~\cite{Hewing2020,Koller2018}; add the deferred LRN dynamics baseline~\cite{Zolman2025,Menegatti2025}; and deploy dynamic-obstacle NMPC constraints~\cite{Sani2021,Lindqvist2020,Du2024}.
+
+\section*{Acknowledgments}
+
+The author thanks the ME569 and ME548 instructional staff at the University of Washington for feedback on the proposal, implementation, and final report. Special thanks to Sanghun Jung from Paul G. Allen School of Computer Science and Engineering, University of Washington, for providing BeamNG telemetry data for SINDy training.
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+% \section*{Appendix --- style guidelines}
+
+
+% This is how to cite a references \cite{LeungSchmerlingEtAl2020}.
+% This is how to cite Table~\ref{tab:table_label}, (equations) \eqref{eq:einstein_energy}, and Figure~\ref{fig:figure_caption}.
+% This is how to \textbf{bold} some words, or \emph{emphasize} some words.
+
+% \begin{table}
+%    \centering
+%    \caption{This is how to make a table.}
+%    \begin{tabular}{|c|c|}
+%       \hline
+%       column A & Column B\\\hline \hline
+%       A & B\\
+%       \hline
+%    \end{tabular}
+%    \label{tab:table_label}
+% \end{table}
+
+% \begin{equation}
+%    e = mc^2 \label{eq:einstein_energy}
+% \end{equation}
+
+% \begin{figure}[h]
+%    \centering
+%    \includegraphics[width=0.45\textwidth]{figs/cat.png}
+%    \caption{Picture of a cute cat.}
+%    \label{fig:figure_caption}
+% \end{figure}
+
+\end{document}

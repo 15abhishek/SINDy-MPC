@@ -50,6 +50,45 @@ Aggregate:
 - `results/benchmark/summary.csv` — one row per run
 - `results/benchmark/speed_vs_accuracy.png` — poster plot
 
+## Fixed-path speed sweep (1–10 m/s, SINDy)
+
+Plans RRT **once**, saves `rrt_path.json`, and reuses it for every cell so comparisons are fair.
+Runs SQP-MPC and MPPI with **SINDy** dynamics at 1, 2, …, 10 m/s (20 BeamNG runs total).
+
+```bash
+# BeamNG already running:
+python scripts/08_benchmark_beamng.py --live --speed-sweep --no-launch
+
+# Or launch BeamNG once for the full matrix:
+python scripts/08_benchmark_beamng.py --live --speed-sweep
+```
+
+Outputs under `results/benchmark/<timestamp>_speed_sweep_sindy/`:
+
+| File | Description |
+|------|-------------|
+| `rrt_path.json` | Shared reference waypoints |
+| `sqp_sindy_<N>mps/` | Per-speed logs + `summary.json` |
+| `mppi_sindy_<N>mps/` | Per-speed logs + `summary.json` |
+| `summary.csv` | All runs |
+| `speed_vs_accuracy.png` | Target vs error / mean speed |
+| `sqp_sindy_speed_sweep_trajectories.png` | All 10 SQP trajectories on one plot |
+| `mppi_sindy_speed_sweep_trajectories.png` | All 10 MPPI trajectories on one plot |
+
+Override speeds or controllers if needed:
+
+```bash
+python scripts/08_benchmark_beamng.py --live --speed-sweep \
+  --target-speeds 2,4,6,8,10 --controllers sqp --no-launch
+```
+
+Single runs can reuse a saved path:
+
+```bash
+python scripts/07_run_beamng_sim.py --controller sqp --dynamics sindy \
+  --target-speed 5 --rrt-path results/benchmark/<run>/rrt_path.json
+```
+
 ## Interpreting speed vs accuracy
 
 - **x-axis (target speed):** commanded cruise from `--target-speed`
